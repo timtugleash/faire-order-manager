@@ -183,6 +183,25 @@ def build_excel(orders: list) -> bytes:
 
 st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
 
+# ── Password Protection ───────────────────────────────────────────────────────
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.title("📦 Faire Order Manager")
+        password = st.text_input("Enter password", type="password")
+        if st.button("Login"):
+            if password == st.secrets.get("APP_PASSWORD", ""):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+        st.stop()
+
+check_password()
+# ─────────────────────────────────────────────────────────────────────────────
+
 st.title("📦 Faire Order Manager")
 st.caption("Showing NEW and PROCESSING orders only.")
 
