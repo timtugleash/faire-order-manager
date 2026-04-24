@@ -2,7 +2,7 @@
 Faire Order Manager — Streamlit App
 =====================================
 Displays NEW and PROCESSING orders from Faire.
-Allows downloading the order data as Excel and packing slips as PDFs.
+Admin and User role-based login.
 
 SETUP:
   pip install streamlit requests openpyxl
@@ -11,8 +11,8 @@ RUN LOCALLY:
   streamlit run streamlit_app.py
 
 DEPLOY:
-  Push to GitHub, then connect to share.streamlit.io
-  Add FAIRE_API_KEY to Streamlit Cloud secrets.
+  Push to GitHub, connect to share.streamlit.io
+  Add secrets: FAIRE_API_KEY, ADMIN_PASSWORD, USER_PASSWORD
 """
 
 import io
@@ -26,7 +26,6 @@ from openpyxl.utils import get_column_letter
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
-# Get API key from Streamlit secrets (when deployed) or environment variable
 # ─────────────────────────────────────────────
 FAIRE_API_KEY = st.secrets.get("FAIRE_API_KEY", os.environ.get("FAIRE_API_KEY", ""))
 
@@ -44,6 +43,37 @@ ALL_SKUS = [
 ]
 
 INCLUDE_STATES = {"NEW", "PROCESSING"}
+
+# ─────────────────────────────────────────────
+# ROLE-BASED LOGIN
+# ─────────────────────────────────────────────
+USERS = {
+    "admin": {"password": st.secrets.get("ADMIN_PASSWORD", "shenzhen#1"), "role": "admin"},
+    "user":  {"password": st.secrets.get("USER_PASSWORD",  "tug2026"),    "role": "user"},
+}
+
+st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
+
+def login_screen():
+    st.title("📦 Faire Order Manager")
+    st.markdown("Please log in to continue.")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        user = USERS.get(username.lower())
+        if user and password == user["password"]:
+            st.session_state.authenticated = True
+            st.session_state.role          = user["role"]
+            st.session_state.username      = username.lower()
+            st.rerun()
+        else:
+            st.error("Incorrect username or password.")
+    st.stop()
+
+if not st.session_state.get("authenticated"):
+    login_screen()
+
+role = st.session_state.get("role", "user")
 
 # ─────────────────────────────────────────────
 # API FUNCTIONS
@@ -144,11 +174,11 @@ def build_excel(orders: list) -> bytes:
     for col_offset, order in enumerate(orders):
         col = col_offset + 2
 
-        date_cell = ws.cell(row=ROW_DATE,     column=col, value=order["created_at"])
+        date_cell = ws.cell(row=ROW_DATE, column=col, value=order["created_at"])
         date_cell.font      = Font(name="Arial", size=10)
         date_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        ord_cell  = ws.cell(row=ROW_ORDER,    column=col, value=order["order_number"])
+        ord_cell = ws.cell(row=ROW_ORDER, column=col, value=order["order_number"])
         ord_cell.font      = Font(bold=True, name="Arial", size=10, color="FFFFFF")
         ord_cell.fill      = PatternFill("solid", start_color="2F5496")
         ord_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -181,39 +211,24 @@ def build_excel(orders: list) -> bytes:
 # STREAMLIT UI
 # ─────────────────────────────────────────────
 
-st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
-
-# ── Password Protection ───────────────────────────────────────────────────────
-def check_password():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-
-    if not st.session_state.authenticated:
-        st.title("📦 Faire Order Manager")
-        password = st.text_input("Enter password", type="password")
-        if st.button("Login"):
-            if password == st.secrets.get("APP_PASSWORD", ""):
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Incorrect password.")
-        st.stop()
-
-check_password()
-# ─────────────────────────────────────────────────────────────────────────────
-
-st.title("📦 Faire Order Manager")
-st.caption("Showing NEW and PROCESSING orders only.")
+# Header with logout
+col_title, col_logout = st.columns([6, 1])
+with col_title:
+    st.title("📦 Faire Order Manager")
+    st.caption(f"Logged in as **{st.session_state.username}** ({role})  |  Showing NEW and PROCESSING orders only.")
+with col_logout:
+    st.write("")
+    if st.button("Logout"):
+        st.session_state.clear()
+        st.rerun()
 
 if not FAIRE_API_KEY:
     st.error("No Faire API key found. Add FAIRE_API_KEY to your Streamlit secrets.")
     st.stop()
 
 # ── Fetch orders ──────────────────────────────────────────────────────────────
-col_refresh, col_status = st.columns([1, 5])
-with col_refresh:
-    if st.button("🔄 Refresh Orders"):
-        st.cache_data.clear()
+if st.button("🔄 Refresh Orders"):
+    st.cache_data.clear()
 
 with st.spinner("Fetching orders from Faire..."):
     try:
@@ -228,20 +243,20 @@ if not orders:
 
 st.success(f"**{len(orders)} order(s)** found.")
 
-# ── Download all as Excel ─────────────────────────────────────────────────────
-st.subheader("📊 Download Order Data")
-excel_bytes = build_excel(orders)
-st.download_button(
-    label     = "⬇️ Download Excel (All Orders)",
-    data      = excel_bytes,
-    file_name = "faire_orders.xlsx",
-    mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+# ── Download all as Excel (admin only) ───────────────────────────────────────
+if role == "admin":
+    st.subheader("📊 Download Order Data")
+    excel_bytes = build_excel(orders)
+    st.download_button(
+        label     = "⬇️ Download Excel (All Orders)",
+        data      = excel_bytes,
+        file_name = "faire_orders.xlsx",
+        mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
-# ── Orders table + individual packing slips ───────────────────────────────────
+# ── Orders table + packing slips ─────────────────────────────────────────────
 st.subheader("📋 Orders")
 
-# Header row
 cols = st.columns([2, 3, 2, 2, 2])
 cols[0].markdown("**Order #**")
 cols[1].markdown("**Customer**")
@@ -258,7 +273,6 @@ for order in orders:
     cols[2].write(order["created_at"])
     cols[3].write(order["state"])
 
-    # Packing slip download button per order
     customer_safe = (order["customer"] or "Unknown").replace("/", "-").replace("\\", "-")
     filename      = f"{order['order_number']}_{customer_safe}_PackingSlip.pdf"
 
