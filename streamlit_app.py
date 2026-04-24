@@ -49,7 +49,7 @@ INCLUDE_STATES = {"NEW", "PROCESSING"}
 # ─────────────────────────────────────────────
 USERS = {
     "admin": {"password": st.secrets.get("ADMIN_PASSWORD", "shenzhen#1"), "role": "admin"},
-    "user":  {"password": st.secrets.get("USER_PASSWORD",  "tug2026"),    "role": "user"},
+    "jt":    {"password": st.secrets.get("USER_PASSWORD",  "tug2026"),    "role": "user"},
 }
 
 st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
