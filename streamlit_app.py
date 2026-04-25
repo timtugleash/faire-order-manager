@@ -1,18 +1,29 @@
 """
 Faire Order Manager — Streamlit App
 =====================================
-Displays NEW and PROCESSING orders from Faire.
-Admin and User role-based login.
+- Role-based login (admin / user)
+- Pulls NEW and PROCESSING orders from Faire API
+- Downloads packing slips as PDFs
+- Downloads order data as Excel
+- View Current Inventory from Google Sheets
+- WSP Orders entry (admin only)
 
 SETUP:
-  pip install streamlit requests openpyxl
+  pip install streamlit requests openpyxl gspread google-auth
 
-RUN LOCALLY:
-  streamlit run streamlit_app.py
+STREAMLIT SECRETS FORMAT:
+  FAIRE_API_KEY = "..."
+  ADMIN_PASSWORD = "..."
+  USER_PASSWORD = "..."
+  SHEET_ID = "..."
 
-DEPLOY:
-  Push to GitHub, connect to share.streamlit.io
-  Add secrets: FAIRE_API_KEY, ADMIN_PASSWORD, USER_PASSWORD
+  [gcp_service_account]
+  type = "service_account"
+  project_id = "..."
+  private_key_id = "..."
+  private_key = "..."
+  client_email = "..."
+  ...
 """
 
 import io
@@ -20,6 +31,8 @@ import os
 import requests
 import openpyxl
 import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -27,7 +40,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-FAIRE_API_KEY = st.secrets.get("FAIRE_API_KEY", os.environ.get("FAIRE_API_KEY", ""))
+FAIRE_API_KEY = st.secrets.get("FAIRE_API_KEY", "")
+SHEET_ID      = st.secrets.get("SHEET_ID", "")
 
 ALL_SKUS = [
     "T008-SBLK", "T008-MBLK", "T008-LBLK",
@@ -76,9 +90,30 @@ if not st.session_state.get("authenticated"):
 role = st.session_state.get("role", "user")
 
 # ─────────────────────────────────────────────
-# API FUNCTIONS
+# GOOGLE SHEETS CONNECTION
 # ─────────────────────────────────────────────
+@st.cache_resource
+def get_gsheet_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds  = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scopes,
+    )
+    return gspread.authorize(creds)
 
+
+def get_sheet(tab_name: str):
+    client = get_gsheet_client()
+    sh     = client.open_by_key(SHEET_ID)
+    return sh.worksheet(tab_name)
+
+
+# ─────────────────────────────────────────────
+# FAIRE API FUNCTIONS
+# ─────────────────────────────────────────────
 def parse_order(data: dict) -> dict:
     items = []
     for item in data.get("items", []):
@@ -103,7 +138,6 @@ def parse_order(data: dict) -> dict:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_orders() -> list:
-    """Fetch all NEW and PROCESSING orders. Cached for 5 minutes."""
     headers = {"X-FAIRE-ACCESS-TOKEN": FAIRE_API_KEY}
     orders  = []
     cursor  = None
@@ -133,7 +167,6 @@ def fetch_orders() -> list:
 
 
 def fetch_packing_slip(raw_id: str) -> bytes:
-    """Fetch a single packing slip PDF as bytes."""
     headers = {"X-FAIRE-ACCESS-TOKEN": FAIRE_API_KEY}
     url     = f"https://www.faire.com/external-api/v2/orders/{raw_id}/packing-slip-pdf"
     r       = requests.get(url, headers=headers)
@@ -144,9 +177,7 @@ def fetch_packing_slip(raw_id: str) -> bytes:
 # ─────────────────────────────────────────────
 # EXCEL BUILDER
 # ─────────────────────────────────────────────
-
 def build_excel(orders: list) -> bytes:
-    """Build the Excel workbook in memory and return as bytes."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Order Data"
@@ -163,8 +194,6 @@ def build_excel(orders: list) -> bytes:
         cell.font      = Font(bold=True, name="Arial", size=10)
         cell.fill      = PatternFill("solid", start_color="D9E1F2")
         cell.alignment = Alignment(horizontal="left", vertical="center")
-
-    ws.cell(row=ROW_BLANK, column=1, value="")
 
     for i, sku in enumerate(ALL_SKUS):
         cell = ws.cell(row=ROW_SKU_START + i, column=1, value=sku)
@@ -198,9 +227,6 @@ def build_excel(orders: list) -> bytes:
     for col_offset in range(len(orders)):
         ws.column_dimensions[get_column_letter(col_offset + 2)].width = 22
 
-    for row in range(1, ROW_SKU_START + len(ALL_SKUS)):
-        ws.row_dimensions[row].height = 16
-
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -208,83 +234,197 @@ def build_excel(orders: list) -> bytes:
 
 
 # ─────────────────────────────────────────────
-# STREAMLIT UI
+# HEADER + NAVIGATION
 # ─────────────────────────────────────────────
-
-# Header with logout
 col_title, col_logout = st.columns([6, 1])
 with col_title:
     st.title("📦 Faire Order Manager")
-    st.caption(f"Logged in as **{st.session_state.username}** ({role})  |  Showing NEW and PROCESSING orders only.")
+    st.caption(f"Logged in as **{st.session_state.username}** ({role})")
 with col_logout:
     st.write("")
     if st.button("Logout"):
         st.session_state.clear()
         st.rerun()
 
-if not FAIRE_API_KEY:
-    st.error("No Faire API key found. Add FAIRE_API_KEY to your Streamlit secrets.")
-    st.stop()
+# Sidebar navigation
+pages = ["📋 Orders", "📊 Inventory"]
+if role == "admin":
+    pages.append("🛒 WSP Orders")
 
-# ── Fetch orders ──────────────────────────────────────────────────────────────
-if st.button("🔄 Refresh Orders"):
-    st.cache_data.clear()
+page = st.sidebar.radio("Navigation", pages)
+st.sidebar.divider()
+st.sidebar.caption(f"Logged in as **{st.session_state.username}**")
 
-with st.spinner("Fetching orders from Faire..."):
-    try:
-        orders = fetch_orders()
-    except Exception as e:
-        st.error(f"Failed to fetch orders: {e}")
+# ─────────────────────────────────────────────
+# PAGE: ORDERS
+# ─────────────────────────────────────────────
+if page == "📋 Orders":
+    st.header("📋 New & Processing Orders")
+    st.caption("Showing NEW and PROCESSING orders from Faire only.")
+
+    if not FAIRE_API_KEY:
+        st.error("No Faire API key found.")
         st.stop()
 
-if not orders:
-    st.info("No NEW or PROCESSING orders found.")
-    st.stop()
+    if st.button("🔄 Refresh Orders"):
+        st.cache_data.clear()
 
-st.success(f"**{len(orders)} order(s)** found.")
-
-# ── Download all as Excel (admin only) ───────────────────────────────────────
-if role == "admin":
-    st.subheader("📊 Download Order Data")
-    excel_bytes = build_excel(orders)
-    st.download_button(
-        label     = "⬇️ Download Excel (All Orders)",
-        data      = excel_bytes,
-        file_name = "faire_orders.xlsx",
-        mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-# ── Orders table + packing slips ─────────────────────────────────────────────
-st.subheader("📋 Orders")
-
-cols = st.columns([2, 3, 2, 2, 2])
-cols[0].markdown("**Order #**")
-cols[1].markdown("**Customer**")
-cols[2].markdown("**Date**")
-cols[3].markdown("**Status**")
-cols[4].markdown("**Packing Slip**")
-
-st.divider()
-
-for order in orders:
-    cols = st.columns([2, 3, 2, 2, 2])
-    cols[0].write(order["order_number"])
-    cols[1].write(order["customer"] or "—")
-    cols[2].write(order["created_at"])
-    cols[3].write(order["state"])
-
-    customer_safe = (order["customer"] or "Unknown").replace("/", "-").replace("\\", "-")
-    filename      = f"{order['order_number']}_{customer_safe}_PackingSlip.pdf"
-
-    with cols[4]:
+    with st.spinner("Fetching orders from Faire..."):
         try:
-            pdf_bytes = fetch_packing_slip(order["raw_id"])
-            st.download_button(
-                label     = "⬇️ PDF",
-                data      = pdf_bytes,
-                file_name = filename,
-                mime      = "application/pdf",
-                key       = f"pdf_{order['raw_id']}",
-            )
-        except Exception:
-            st.write("Unavailable")
+            orders = fetch_orders()
+        except Exception as e:
+            st.error(f"Failed to fetch orders: {e}")
+            st.stop()
+
+    if not orders:
+        st.info("No NEW or PROCESSING orders found.")
+        st.stop()
+
+    st.success(f"**{len(orders)} order(s)** found.")
+
+    if role == "admin":
+        excel_bytes = build_excel(orders)
+        st.download_button(
+            label     = "⬇️ Download Excel (All Orders)",
+            data      = excel_bytes,
+            file_name = "faire_orders.xlsx",
+            mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    st.divider()
+
+    cols = st.columns([2, 3, 2, 2, 2])
+    cols[0].markdown("**Order #**")
+    cols[1].markdown("**Customer**")
+    cols[2].markdown("**Date**")
+    cols[3].markdown("**Status**")
+    cols[4].markdown("**Packing Slip**")
+    st.divider()
+
+    for order in orders:
+        cols = st.columns([2, 3, 2, 2, 2])
+        cols[0].write(order["order_number"])
+        cols[1].write(order["customer"] or "—")
+        cols[2].write(order["created_at"])
+        cols[3].write(order["state"])
+
+        customer_safe = (order["customer"] or "Unknown").replace("/", "-").replace("\\", "-")
+        filename      = f"{order['order_number']}_{customer_safe}_PackingSlip.pdf"
+
+        with cols[4]:
+            try:
+                pdf_bytes = fetch_packing_slip(order["raw_id"])
+                st.download_button(
+                    label     = "⬇️ PDF",
+                    data      = pdf_bytes,
+                    file_name = filename,
+                    mime      = "application/pdf",
+                    key       = f"pdf_{order['raw_id']}",
+                )
+            except Exception:
+                st.write("Unavailable")
+
+# ─────────────────────────────────────────────
+# PAGE: INVENTORY
+# ─────────────────────────────────────────────
+elif page == "📊 Inventory":
+    st.header("📊 Current Inventory")
+    st.caption("Read-only view from Google Sheets. Data cannot be edited here.")
+
+    try:
+        ws      = get_sheet("Inventory")
+        data    = ws.get_all_values()
+        headers = data[0]
+        rows    = data[1:]
+
+        # Build a clean table: SKU, Product, Current Inventory, Avg/Day, Days Available
+        st.subheader("Stock Levels")
+
+        col_indices = {h: i for i, h in enumerate(headers)}
+
+        # Display as a styled table
+        inv_data = []
+        for row in rows:
+            if len(row) > 1 and row[1]:  # SKU column
+                inv_data.append({
+                    "Product":           row[0] if row[0] else "",
+                    "SKU":               row[1],
+                    "Storage Box":       row[2] if len(row) > 2 else "",
+                    "Pcs/Carton":        row[3] if len(row) > 3 else "",
+                    "Total Received":    row[4] if len(row) > 4 else "",
+                    "Current Inventory": row[5] if len(row) > 5 else "",
+                    "Avg Units/Day":     row[8] if len(row) > 8 else "",
+                    "Days Available":    row[9] if len(row) > 9 else "",
+                })
+
+        import pandas as pd
+        df = pd.DataFrame(inv_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Could not load inventory: {e}")
+
+# ─────────────────────────────────────────────
+# PAGE: WSP ORDERS (Admin only)
+# ─────────────────────────────────────────────
+elif page == "🛒 WSP Orders":
+    st.header("🛒 WholesalePet.com Orders")
+    st.caption("Admin only. Enter new WSP orders below.")
+
+    # View existing WSP orders
+    try:
+        ws   = get_sheet("WSP Orders")
+        data = ws.get_all_values()
+
+        if len(data) > 1:
+            st.subheader("Existing WSP Orders")
+            import pandas as pd
+            df = pd.DataFrame(data[1:], columns=data[0])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No WSP orders entered yet.")
+    except Exception as e:
+        st.error(f"Could not load WSP orders: {e}")
+
+    st.divider()
+    st.subheader("➕ Enter New WSP Order")
+
+    with st.form("wsp_order_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            order_date = st.date_input("Order Date")
+        with col2:
+            order_num  = st.text_input("Order #")
+        with col3:
+            customer   = st.text_input("Customer", value="WholesalePet.com")
+
+        st.markdown("**Enter quantities for each SKU (leave blank if not ordered):**")
+
+        # Display SKU inputs in a grid
+        quantities = {}
+        cols_per_row = 4
+        sku_chunks = [ALL_SKUS[i:i+cols_per_row] for i in range(0, len(ALL_SKUS), cols_per_row)]
+
+        for chunk in sku_chunks:
+            cols = st.columns(cols_per_row)
+            for i, sku in enumerate(chunk):
+                with cols[i]:
+                    quantities[sku] = st.number_input(sku, min_value=0, value=0, step=1, key=f"wsp_{sku}")
+
+        submitted = st.form_submit_button("💾 Save WSP Order")
+
+        if submitted:
+            if not order_num:
+                st.error("Please enter an Order #.")
+            else:
+                try:
+                    ws  = get_sheet("WSP Orders")
+                    # Build row: Date, Order#, Customer, then SKU quantities in order
+                    row = [str(order_date), order_num, customer] + [
+                        quantities[sku] if quantities[sku] > 0 else "" for sku in ALL_SKUS
+                    ]
+                    ws.append_row(row)
+                    st.success(f"✅ Order {order_num} saved successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save order: {e}")
