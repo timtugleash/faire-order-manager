@@ -415,6 +415,71 @@ def load_orders_from_sheet() -> list:
 
 
 # ─────────────────────────────────────────────
+# FINALIZE ORDERS
+# ─────────────────────────────────────────────
+
+def get_existing_all_orders_numbers() -> set:
+    """Get order numbers already in the All Orders tab."""
+    try:
+        ws   = get_sheet("All Orders")
+        # Order # is in row 3 (index 2), columns B onwards
+        row3 = ws.row_values(3)
+        return set(v for v in row3[1:] if v)
+    except Exception:
+        return set()
+
+
+def finalize_orders_to_sheet(faire_orders: list, wsp_orders: list) -> tuple:
+    """Copy all new + processing orders to All Orders tab as new columns."""
+    from gspread.utils import rowcol_to_a1
+
+    existing = get_existing_all_orders_numbers()
+    all_to_add = [o for o in faire_orders + wsp_orders if o["order_number"] not in existing]
+
+    if not all_to_add:
+        return 0, 0
+
+    ws       = get_sheet("All Orders")
+    data     = ws.get_all_values()
+    max_cols = max((len(row) for row in data), default=0)
+
+    added_faire = 0
+    added_wsp   = 0
+
+    for order in all_to_add:
+        next_col   = max_cols + 1
+        sku_lookup = {item["sku"]: item["quantity"] for item in order["items"]}
+
+        col_values = [
+            order.get("raw_id", ""),    # Row 1: raw_id
+            order["created_at"],         # Row 2: Order Date
+            order["order_number"],       # Row 3: Order #
+            order["customer"],           # Row 4: Customer
+            "",                          # Row 5: blank
+        ] + [
+            sku_lookup.get(sku, "") for sku in ALL_SKUS
+        ]
+
+        cell_updates = []
+        for row_idx, val in enumerate(col_values, start=1):
+            if val != "":
+                cell_updates.append({
+                    "range":  rowcol_to_a1(row_idx, next_col),
+                    "values": [[val]],
+                })
+        if cell_updates:
+            ws.batch_update(cell_updates)
+
+        max_cols += 1
+        if order["source"] == "FAIRE":
+            added_faire += 1
+        else:
+            added_wsp += 1
+
+    return added_faire, added_wsp
+
+
+# ─────────────────────────────────────────────
 # EXCEL BUILDER
 # ─────────────────────────────────────────────
 def build_excel(orders: list) -> bytes:
@@ -556,6 +621,37 @@ if page == "📋 Orders":
             mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    # Finalize Orders — double confirmation
+    if role == "admin":
+        st.divider()
+        st.subheader("✅ Finalize Orders")
+        st.caption("Moves all current orders to the All Orders tab in Google Sheets.")
+
+        if "finalize_confirm1" not in st.session_state:
+            st.session_state["finalize_confirm1"] = False
+
+        if not st.session_state["finalize_confirm1"]:
+            if st.button("✅ Finalize Orders", type="primary"):
+                st.session_state["finalize_confirm1"] = True
+                st.rerun()
+        else:
+            st.warning("⚠️ Are you sure? This will copy all current orders to the All Orders tab. This cannot be undone.")
+            col_yes, col_no = st.columns([1, 1])
+            with col_yes:
+                if st.button("✅ Yes, Finalize", type="primary"):
+                    with st.spinner("Finalizing orders..."):
+                        try:
+                            added_faire, added_wsp = finalize_orders_to_sheet(faire_orders, wsp_orders)
+                            st.session_state["finalize_confirm1"] = False
+                            st.success(f"✅ Done! {added_faire} Faire + {added_wsp} WSP order(s) added to All Orders tab.")
+                        except Exception as e:
+                            st.error(f"Failed to finalize: {e}")
+                            st.session_state["finalize_confirm1"] = False
+            with col_no:
+                if st.button("❌ Cancel"):
+                    st.session_state["finalize_confirm1"] = False
+                    st.rerun()
+
     st.divider()
 
     cols = st.columns([2, 3, 2, 2, 1, 2])
@@ -617,6 +713,12 @@ elif page == "📊 Inventory":
     st.header("📊 Current Inventory")
     st.caption("Read-only view from Google Sheets.")
 
+    if "inv_data" not in st.session_state:
+        st.session_state["inv_data"] = None
+
+    if st.button("🔄 Refresh Inventory"):
+        st.session_state["inv_data"] = None
+
     def sheet_to_excel(tab_name: str) -> bytes:
         """Export a Google Sheet tab as formatted Excel using Google export API."""
         # Get the sheet GID (tab ID) for the specific tab
@@ -637,18 +739,33 @@ elif page == "📊 Inventory":
         response.raise_for_status()
         return response.content
 
-    try:
-        client = get_gsheet_client()
-        sh     = client.open_by_key(SHEET_ID)
-        ws     = sh.worksheet("Inventory")
-        rows   = ws.get_all_values()
+    if st.session_state["inv_data"] is None:
+        with st.spinner("Loading inventory..."):
+            try:
+                client = get_gsheet_client()
+                sh     = client.open_by_key(SHEET_ID)
+                ws     = sh.worksheet("Inventory")
+                rows   = ws.get_all_values()
+                if rows and len(rows) > 1:
+                    inv_rows = []
+                    for row in rows[1:]:
+                        if len(row) < 2 or not row[1]:
+                            continue
+                        inv_rows.append(row)
+                    st.session_state["inv_data"] = inv_rows
+                else:
+                    st.session_state["inv_data"] = []
+            except Exception as e:
+                st.error(f"Could not load inventory: {e}")
+                st.session_state["inv_data"] = []
 
-        if not rows or len(rows) < 2:
+    rows = st.session_state["inv_data"]
+    try:
+        if not rows:
             st.info("No inventory data found.")
         else:
-            data_rows = rows[1:]
             inv_data  = []
-            for row in data_rows:
+            for row in rows:
                 if len(row) < 2 or not row[1]:
                     continue
                 inv_data.append({
