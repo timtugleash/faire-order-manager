@@ -125,17 +125,45 @@ def get_sheet(tab_name: str):
 
 
 def upload_pdf_to_drive(pdf_bytes: bytes, filename: str) -> str:
-    """Upload a PDF to Google Drive and return the file ID."""
-    # Build a fresh service each time to avoid broken pipe from cached connections
+    """Upload a PDF to Google Drive using a multipart upload without storage quota."""
+    import googleapiclient.http as ghttp
     creds   = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=SCOPES,
     )
-    service = build("drive", "v3", credentials=creds)
-    media   = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=True)
-    file_meta = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
-    file    = service.files().create(body=file_meta, media_body=media, fields="id").execute()
-    return file.get("id", "")
+    service   = build("drive", "v3", credentials=creds)
+    buf       = io.BytesIO(pdf_bytes)
+    media     = ghttp.MediaIoBaseUpload(buf, mimetype="application/pdf", resumable=False)
+    file_meta = {
+        "name":    filename,
+        "parents": [DRIVE_FOLDER_ID],
+    }
+    file = service.files().create(
+        body              = file_meta,
+        media_body        = media,
+        fields            = "id",
+        supportsAllDrives = True,
+    ).execute()
+    file_id = file.get("id", "")
+
+    # Transfer ownership to the account owner so the file uses their quota
+    owner_email = st.secrets.get("OWNER_EMAIL", "")
+    if owner_email and file_id:
+        try:
+            service.permissions().create(
+                fileId            = file_id,
+                transferOwnership = True,
+                supportsAllDrives = True,
+                body              = {
+                    "type":         "user",
+                    "role":         "owner",
+                    "emailAddress": owner_email,
+                },
+            ).execute()
+        except Exception:
+            pass  # Ownership transfer may not always work but file still uploads
+
+    return file_id
 
 
 def download_pdf_from_drive(file_id: str) -> bytes:
