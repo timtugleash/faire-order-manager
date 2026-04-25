@@ -227,7 +227,7 @@ def get_wsp_orders() -> list:
                 "order_number":  order_num,
                 "raw_id":        f"wsp_{order_num}",
                 "created_at":    cell(0),
-                "state":         "PROCESSING",
+                "state":         "NEW",
                 "customer":      cell(2),
                 "drive_file_id": drive_file_id,
                 "items":         items,
