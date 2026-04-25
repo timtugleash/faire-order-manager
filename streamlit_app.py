@@ -33,7 +33,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -441,7 +441,7 @@ elif page == "📊 Inventory":
             f"?format=xlsx&gid={gid}"
         )
         creds = get_credentials()
-        creds.refresh(requests.Request())
+        creds.refresh(GoogleAuthRequest())
         headers  = {"Authorization": f"Bearer {creds.token}"}
         response = requests.get(export_url, headers=headers)
         response.raise_for_status()
