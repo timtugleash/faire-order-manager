@@ -336,8 +336,11 @@ elif page == "📊 Inventory":
     st.caption("Read-only view from Google Sheets.")
 
     try:
-        ws   = get_sheet("Inventory")
-        rows = ws.get_all_values(value_render_option="FORMATTED_VALUE")
+        client = get_gsheet_client()
+        sh     = client.open_by_key(SHEET_ID)
+        ws     = sh.worksheet("Inventory")
+        # Fetch a specific range to avoid formula evaluation issues
+        rows   = ws.get("A1:L40", value_render_option="FORMATTED_VALUE")
 
         if not rows:
             st.info("No inventory data found.")
