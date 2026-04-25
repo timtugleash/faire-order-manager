@@ -125,43 +125,60 @@ def get_sheet(tab_name: str):
     return sh.worksheet(tab_name)
 
 
+CHUNK_SIZE = 40000  # characters per cell, safely under 50000 limit
+
 def store_pdf_in_sheet(pdf_bytes: bytes, filename: str) -> str:
-    """Store PDF as base64 in a dedicated Google Sheet tab. Returns a key to retrieve it."""
-    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    """Store PDF as chunked base64 across multiple rows in PDF_Store sheet."""
+    b64    = base64.b64encode(pdf_bytes).decode("utf-8")
+    chunks = [b64[i:i+CHUNK_SIZE] for i in range(0, len(b64), CHUNK_SIZE)]
     try:
         sh = get_gsheet_client().open_by_key(SHEET_ID)
         try:
             pdf_ws = sh.worksheet("PDF_Store")
         except Exception:
-            pdf_ws = sh.add_worksheet(title="PDF_Store", rows=1000, cols=3)
-            pdf_ws.append_row(["key", "filename", "data"])
-        pdf_ws.append_row([filename, filename, b64])
-        return filename  # use filename as the lookup key
+            pdf_ws = sh.add_worksheet(title="PDF_Store", rows=5000, cols=4)
+            pdf_ws.append_row(["key", "filename", "chunk_index", "data"])
+
+        for i, chunk in enumerate(chunks):
+            pdf_ws.append_row([filename, filename, i, chunk])
+
+        return filename
     except Exception as e:
         raise Exception(f"PDF store failed: {e}")
 
 
 def retrieve_pdf_from_sheet(key: str) -> bytes:
-    """Retrieve a PDF stored as base64 in Google Sheets by key."""
+    """Retrieve and reassemble a chunked PDF from PDF_Store sheet."""
     sh     = get_gsheet_client().open_by_key(SHEET_ID)
     pdf_ws = sh.worksheet("PDF_Store")
     rows   = pdf_ws.get_all_values()
+
+    chunks = {}
     for row in rows[1:]:
-        if len(row) >= 3 and row[0] == key:
-            return base64.b64decode(row[2])
-    raise Exception(f"PDF not found for key: {key}")
+        if len(row) >= 4 and row[0] == key:
+            try:
+                idx = int(row[2])
+                chunks[idx] = row[3]
+            except ValueError:
+                pass
+
+    if not chunks:
+        raise Exception(f"PDF not found for key: {key}")
+
+    b64 = "".join(chunks[i] for i in sorted(chunks.keys()))
+    return base64.b64decode(b64)
 
 
 def delete_pdf_from_sheet(key: str):
-    """Delete a PDF entry from the PDF_Store sheet."""
+    """Delete all chunks for a PDF from PDF_Store sheet."""
     try:
         sh     = get_gsheet_client().open_by_key(SHEET_ID)
         pdf_ws = sh.worksheet("PDF_Store")
         rows   = pdf_ws.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if len(row) >= 1 and row[0] == key:
-                pdf_ws.delete_rows(i)
-                break
+        # Collect row indices to delete (in reverse to avoid index shifting)
+        to_delete = [i + 2 for i, row in enumerate(rows[1:]) if len(row) >= 1 and row[0] == key]
+        for row_idx in reversed(to_delete):
+            pdf_ws.delete_rows(row_idx)
     except Exception:
         pass
 
