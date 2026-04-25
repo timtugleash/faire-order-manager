@@ -1,5 +1,5 @@
 """
-Faire Order Manager — Streamlit App
+Wholesale Order Manager — Streamlit App
 =====================================
 - Role-based login (admin / user)
 - Pulls NEW and PROCESSING orders from Faire API
@@ -64,7 +64,7 @@ INCLUDE_STATES = {"NEW", "PROCESSING"}
 # ─────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────
-st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Wholesale Order Manager", page_icon="📦", layout="wide")
 
 # ─────────────────────────────────────────────
 # ROLE-BASED LOGIN
@@ -75,7 +75,7 @@ USERS = {
 }
 
 def login_screen():
-    st.title("📦 Faire Order Manager")
+    st.title("📦 Wholesale Order Manager")
     st.markdown("Please log in to continue.")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
@@ -580,7 +580,7 @@ def build_excel(orders: list) -> bytes:
 # ─────────────────────────────────────────────
 col_title, col_logout = st.columns([6, 1])
 with col_title:
-    st.title("📦 Faire Order Manager")
+    st.title("📦 Wholesale Order Manager")
     st.caption(f"Logged in as **{st.session_state.username}** ({role})")
 with col_logout:
     st.write("")
