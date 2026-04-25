@@ -9,7 +9,7 @@ Faire Order Manager — Streamlit App
 - WSP Orders entry (admin only)
 
 SETUP:
-  pip install streamlit requests openpyxl gspread google-auth
+  pip install streamlit requests openpyxl gspread google-auth pandas
 
 STREAMLIT SECRETS FORMAT:
   FAIRE_API_KEY = "..."
@@ -27,9 +27,9 @@ STREAMLIT SECRETS FORMAT:
 """
 
 import io
-import os
 import requests
 import openpyxl
+import pandas as pd
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
@@ -59,14 +59,17 @@ ALL_SKUS = [
 INCLUDE_STATES = {"NEW", "PROCESSING"}
 
 # ─────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────
+st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
+
+# ─────────────────────────────────────────────
 # ROLE-BASED LOGIN
 # ─────────────────────────────────────────────
 USERS = {
     "admin": {"password": st.secrets.get("ADMIN_PASSWORD", "shenzhen#1"), "role": "admin"},
     "jt":    {"password": st.secrets.get("USER_PASSWORD",  "tug2026"),    "role": "user"},
 }
-
-st.set_page_config(page_title="Faire Order Manager", page_icon="📦", layout="wide")
 
 def login_screen():
     st.title("📦 Faire Order Manager")
@@ -98,7 +101,7 @@ def get_gsheet_client():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds  = Credentials.from_service_account_info(
+    creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=scopes,
     )
@@ -149,8 +152,8 @@ def fetch_orders() -> list:
 
         r = requests.get(
             "https://www.faire.com/external-api/v2/orders",
-            headers = headers,
-            params  = params,
+            headers=headers,
+            params=params,
         )
         r.raise_for_status()
         data  = r.json()
@@ -246,7 +249,6 @@ with col_logout:
         st.session_state.clear()
         st.rerun()
 
-# Sidebar navigation
 pages = ["📋 Orders", "📊 Inventory"]
 if role == "admin":
     pages.append("🛒 WSP Orders")
@@ -254,6 +256,7 @@ if role == "admin":
 page = st.sidebar.radio("Navigation", pages)
 st.sidebar.divider()
 st.sidebar.caption(f"Logged in as **{st.session_state.username}**")
+
 
 # ─────────────────────────────────────────────
 # PAGE: ORDERS
@@ -324,45 +327,53 @@ if page == "📋 Orders":
             except Exception:
                 st.write("Unavailable")
 
+
 # ─────────────────────────────────────────────
 # PAGE: INVENTORY
 # ─────────────────────────────────────────────
 elif page == "📊 Inventory":
     st.header("📊 Current Inventory")
-    st.caption("Read-only view from Google Sheets. Data cannot be edited here.")
+    st.caption("Read-only view from Google Sheets.")
 
     try:
-        ws      = get_sheet("Inventory")
-        data    = ws.get_all_values()
-        headers = data[0]
-        rows    = data[1:]
+        ws   = get_sheet("Inventory")
+        rows = ws.get_all_values()
 
-        # Build a clean table: SKU, Product, Current Inventory, Avg/Day, Days Available
-        st.subheader("Stock Levels")
+        if not rows:
+            st.info("No inventory data found.")
+        else:
+            # Find header row (row with "SKU" in it)
+            header_row_idx = 0
+            for i, row in enumerate(rows):
+                if "SKU" in row:
+                    header_row_idx = i
+                    break
 
-        col_indices = {h: i for i, h in enumerate(headers)}
+            headers   = rows[header_row_idx]
+            data_rows = rows[header_row_idx + 1:]
 
-        # Display as a styled table
-        inv_data = []
-        for row in rows:
-            if len(row) > 1 and row[1]:  # SKU column
+            inv_data = []
+            for row in data_rows:
+                if len(row) < 2 or not row[1]:
+                    continue
                 inv_data.append({
-                    "Product":           row[0] if row[0] else "",
-                    "SKU":               row[1],
+                    "Product":           row[0] if len(row) > 0 else "",
+                    "SKU":               row[1] if len(row) > 1 else "",
                     "Storage Box":       row[2] if len(row) > 2 else "",
                     "Pcs/Carton":        row[3] if len(row) > 3 else "",
                     "Total Received":    row[4] if len(row) > 4 else "",
                     "Current Inventory": row[5] if len(row) > 5 else "",
-                    "Avg Units/Day":     row[8] if len(row) > 8 else "",
-                    "Days Available":    row[9] if len(row) > 9 else "",
+                    "Avg Units/Day":     round(float(row[8]), 2) if len(row) > 8 and row[8] else "",
+                    "Days Available":    round(float(row[9]), 1) if len(row) > 9 and row[9] else "",
                 })
 
-        import pandas as pd
-        df = pd.DataFrame(inv_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+            df = pd.DataFrame(inv_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
+        st.info("Tip: Make sure the tab is named exactly 'Inventory' and the service account has Editor access to the sheet.")
+
 
 # ─────────────────────────────────────────────
 # PAGE: WSP ORDERS (Admin only)
@@ -371,18 +382,49 @@ elif page == "🛒 WSP Orders":
     st.header("🛒 WholesalePet.com Orders")
     st.caption("Admin only. Enter new WSP orders below.")
 
-    # View existing WSP orders
+    # View existing WSP orders in spreadsheet layout
     try:
-        ws   = get_sheet("WSP Orders")
-        data = ws.get_all_values()
+        ws         = get_sheet("WSP Orders")
+        data       = ws.get_all_values()
+        order_rows = [r for r in data[1:] if len(r) >= 2 and r[1]]
 
-        if len(data) > 1:
+        if order_rows:
             st.subheader("Existing WSP Orders")
-            import pandas as pd
-            df = pd.DataFrame(data[1:], columns=data[0])
+
+            orders_dict = {}
+            for row in order_rows:
+                order_num = row[1]
+                orders_dict[order_num] = {
+                    "Order Date": row[0] if len(row) > 0 else "",
+                    "Customer":   row[2] if len(row) > 2 else "",
+                }
+                for i, sku in enumerate(ALL_SKUS):
+                    col_idx = i + 3
+                    val = row[col_idx] if col_idx < len(row) else ""
+                    orders_dict[order_num][sku] = val
+
+            order_nums = list(orders_dict.keys())
+            table_rows = []
+
+            for meta in ["Order Date", "Customer"]:
+                row_data = {"SKU": meta}
+                for o in order_nums:
+                    row_data[o] = orders_dict[o].get(meta, "")
+                table_rows.append(row_data)
+
+            table_rows.append({"SKU": "─" * 10})
+
+            for sku in ALL_SKUS:
+                row_data = {"SKU": sku}
+                for o in order_nums:
+                    row_data[o] = orders_dict[o].get(sku, "")
+                table_rows.append(row_data)
+
+            df = pd.DataFrame(table_rows)
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.info("No WSP orders entered yet.")
+
     except Exception as e:
         st.error(f"Could not load WSP orders: {e}")
 
@@ -394,16 +436,15 @@ elif page == "🛒 WSP Orders":
         with col1:
             order_date = st.date_input("Order Date")
         with col2:
-            order_num  = st.text_input("Order #")
+            order_num = st.text_input("Order #")
         with col3:
-            customer   = st.text_input("Customer", value="WholesalePet.com")
+            customer = st.text_input("Customer", value="WholesalePet.com")
 
-        st.markdown("**Enter quantities for each SKU (leave blank if not ordered):**")
+        st.markdown("**Enter quantities for each SKU (leave at 0 if not ordered):**")
 
-        # Display SKU inputs in a grid
-        quantities = {}
+        quantities   = {}
         cols_per_row = 4
-        sku_chunks = [ALL_SKUS[i:i+cols_per_row] for i in range(0, len(ALL_SKUS), cols_per_row)]
+        sku_chunks   = [ALL_SKUS[i:i + cols_per_row] for i in range(0, len(ALL_SKUS), cols_per_row)]
 
         for chunk in sku_chunks:
             cols = st.columns(cols_per_row)
@@ -419,7 +460,6 @@ elif page == "🛒 WSP Orders":
             else:
                 try:
                     ws  = get_sheet("WSP Orders")
-                    # Build row: Date, Order#, Customer, then SKU quantities in order
                     row = [str(order_date), order_num, customer] + [
                         quantities[sku] if quantities[sku] > 0 else "" for sku in ALL_SKUS
                     ]
