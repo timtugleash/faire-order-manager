@@ -338,7 +338,7 @@ elif page == "📊 Inventory":
     try:
         client = get_gsheet_client()
         sh     = client.open_by_key(SHEET_ID)
-        ws     = sh.worksheet("Inventory_Display")
+        ws     = sh.worksheet("Inventory")
         rows   = ws.get_all_values()
 
         if not rows or len(rows) < 2:
