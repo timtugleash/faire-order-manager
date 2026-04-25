@@ -419,12 +419,17 @@ def load_orders_from_sheet() -> list:
 # ─────────────────────────────────────────────
 
 def get_existing_all_orders_numbers() -> set:
-    """Get order numbers already in the All Orders tab."""
+    """Get order numbers already in the All Orders tab.
+    Row 1 contains 'Order# - Customer' so we extract the order number prefix."""
     try:
         ws   = get_sheet("All Orders")
-        # Order # is in row 3 (index 2), columns B onwards
-        row3 = ws.row_values(3)
-        return set(v for v in row3[1:] if v)
+        row1 = ws.row_values(1)
+        nums = set()
+        for val in row1[1:]:
+            if val:
+                # Extract order number before " - "
+                nums.add(val.split(" - ")[0].strip())
+        return nums
     except Exception:
         return set()
 
@@ -433,7 +438,7 @@ def finalize_orders_to_sheet(faire_orders: list, wsp_orders: list) -> tuple:
     """Copy all new + processing orders to All Orders tab as new columns."""
     from gspread.utils import rowcol_to_a1
 
-    existing = get_existing_all_orders_numbers()
+    existing   = get_existing_all_orders_numbers()
     all_to_add = [o for o in faire_orders + wsp_orders if o["order_number"] not in existing]
 
     if not all_to_add:
@@ -443,6 +448,11 @@ def finalize_orders_to_sheet(faire_orders: list, wsp_orders: list) -> tuple:
     data     = ws.get_all_values()
     max_cols = max((len(row) for row in data), default=0)
 
+    # Expand sheet columns if needed
+    needed_cols = max_cols + len(all_to_add) + 5
+    if needed_cols > ws.col_count:
+        ws.resize(cols=needed_cols)
+
     added_faire = 0
     added_wsp   = 0
 
@@ -450,14 +460,13 @@ def finalize_orders_to_sheet(faire_orders: list, wsp_orders: list) -> tuple:
         next_col   = max_cols + 1
         sku_lookup = {item["sku"]: item["quantity"] for item in order["items"]}
 
-        col_values = [
-            order.get("raw_id", ""),    # Row 1: raw_id
-            order["created_at"],         # Row 2: Order Date
-            order["order_number"],       # Row 3: Order #
-            order["customer"],           # Row 4: Customer
-            "",                          # Row 5: blank
+        # Layout: Row1 = "Order# - Customer", Row2 = Date, Row3+ = SKUs
+        order_label = f"{order['order_number']} - {order['customer']}"
+        col_values  = [
+            order_label,            # Row 1: Order # - Customer
+            order["created_at"],    # Row 2: Order Date
         ] + [
-            sku_lookup.get(sku, "") for sku in ALL_SKUS
+            sku_lookup.get(sku, "") for sku in ALL_SKUS  # Row 3+: SKUs
         ]
 
         cell_updates = []
