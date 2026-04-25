@@ -511,8 +511,17 @@ if page == "📋 Orders":
         with st.spinner("Loading orders from sheet..."):
             st.session_state["faire_orders"] = load_orders_from_sheet()
 
+    # Cache controls
+    btn_col1, btn_col2 = st.columns([2, 2])
+    with btn_col2:
+        if st.button("🗑️ Clear Local Cache"):
+            if "faire_orders" in st.session_state:
+                del st.session_state["faire_orders"]
+            st.rerun()
+
     # Manual refresh button — pulls from Faire API and syncs new orders to sheet
-    if st.button("🔄 Refresh from Faire"):
+    with btn_col1:
+     if st.button("🔄 Refresh from Faire"):
         with st.spinner("Fetching latest orders from Faire..."):
             try:
                 fresh_orders = fetch_faire_orders()
