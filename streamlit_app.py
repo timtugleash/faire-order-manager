@@ -147,32 +147,52 @@ def download_pdf_from_drive(file_id: str) -> bytes:
 
 
 def get_wsp_orders() -> list:
-    """Fetch WSP orders from Google Sheets and return as list of order dicts."""
+    """Fetch WSP orders from Google Sheets.
+    Layout: rows = labels (Order Date, Order #, Customer, DriveFileID, SKU1...), columns = orders.
+    Row 1 = Order Date, Row 2 = Order #, Row 3 = Customer, Row 4 = DriveFileID, Row 5+ = SKUs.
+    Column A = labels, Column B onwards = one order per column.
+    """
     try:
-        ws         = get_sheet("WSP Orders")
-        data       = ws.get_all_values()
-        order_rows = [r for r in data[1:] if len(r) >= 2 and r[1]]
-        orders     = []
-        for row in order_rows:
+        ws   = get_sheet("WSP Orders")
+        data = ws.get_all_values()  # data[row][col]
+
+        if not data or len(data[0]) < 2:
+            return []
+
+        orders = []
+        # Each column from index 1 onwards is one order
+        num_cols = len(data[0])
+        for col in range(1, num_cols):
+            def cell(row_idx):
+                try:
+                    return data[row_idx][col]
+                except IndexError:
+                    return ""
+
+            order_num = cell(1)  # Row 2 = Order #
+            if not order_num:
+                continue
+
             items = []
             for i, sku in enumerate(ALL_SKUS):
-                col_idx = i + 4  # Date, Order#, Customer, DriveFileID, then SKUs
-                qty_str = row[col_idx] if col_idx < len(row) else ""
+                row_idx = i + 4  # Row 5 onwards = SKUs (0-indexed: 4+)
+                qty_str = cell(row_idx)
                 try:
                     qty = int(qty_str)
                 except (ValueError, TypeError):
                     qty = 0
                 if qty > 0:
                     items.append({"sku": sku, "quantity": qty})
+
             orders.append({
-                "order_number": row[1],
-                "raw_id":       f"wsp_{row[1]}",
-                "created_at":   row[0] if len(row) > 0 else "",
-                "state":        "PROCESSING",
-                "customer":     row[2] if len(row) > 2 else "",
-                "drive_file_id": row[3] if len(row) > 3 else "",
-                "items":        items,
-                "source":       "WSP",
+                "order_number":  order_num,
+                "raw_id":        f"wsp_{order_num}",
+                "created_at":    cell(0),   # Row 1 = Order Date
+                "state":         "PROCESSING",
+                "customer":      cell(2),   # Row 3 = Customer
+                "drive_file_id": cell(3),   # Row 4 = DriveFileID
+                "items":         items,
+                "source":        "WSP",
             })
         return orders
     except Exception:
@@ -524,22 +544,22 @@ elif page == "🛒 WSP Orders":
         data       = ws.get_all_values()
         order_rows = [r for r in data[1:] if len(r) >= 2 and r[1]]
 
-        if order_rows:
+        wsp_orders_view = get_wsp_orders()
+        if wsp_orders_view:
             st.subheader("Existing WSP Orders")
 
             orders_dict = {}
-            for row in order_rows:
-                order_num = row[1]
+            for o in wsp_orders_view:
+                order_num = o["order_number"]
                 orders_dict[order_num] = {
-                    "Order Date":    row[0] if len(row) > 0 else "",
-                    "Customer":      row[2] if len(row) > 2 else "",
-                    "PDF":           "✅" if (len(row) > 3 and row[3]) else "—",
-                    "drive_file_id": row[3] if len(row) > 3 else "",
+                    "Order Date":    o["created_at"],
+                    "Customer":      o["customer"],
+                    "PDF":           "✅" if o.get("drive_file_id") else "—",
+                    "drive_file_id": o.get("drive_file_id", ""),
                 }
-                for i, sku in enumerate(ALL_SKUS):
-                    col_idx = i + 4
-                    val = row[col_idx] if col_idx < len(row) else ""
-                    orders_dict[order_num][sku] = val
+                sku_lookup = {item["sku"]: item["quantity"] for item in o["items"]}
+                for sku in ALL_SKUS:
+                    orders_dict[order_num][sku] = sku_lookup.get(sku, "")
 
             order_nums = list(orders_dict.keys())
             table_rows = []
@@ -571,20 +591,22 @@ elif page == "🛒 WSP Orders":
                 if st.button("🗑️ Confirm Delete", type="primary"):
                     try:
                         ws_del   = get_sheet("WSP Orders")
-                        all_rows = ws_del.get_all_values()
-                        row_index = None
-                        for i, row in enumerate(all_rows):
-                            if len(row) >= 2 and row[1] == order_to_delete:
-                                row_index = i + 1
-                                break
-                        if row_index:
+                        data_del = ws_del.get_all_values()
+                        col_index = None
+                        # Order # is in row index 1 (second row), find matching column
+                        if len(data_del) > 1:
+                            for col_i, val in enumerate(data_del[1]):
+                                if val == order_to_delete:
+                                    col_index = col_i + 1  # gspread is 1-indexed
+                                    break
+                        if col_index:
                             file_id = orders_dict[order_to_delete].get("drive_file_id", "")
                             if file_id:
                                 try:
                                     get_drive_service().files().delete(fileId=file_id).execute()
                                 except Exception:
                                     pass
-                            ws_del.delete_rows(row_index)
+                            ws_del.delete_columns(col_index)
                             st.success(f"✅ Order {order_to_delete} deleted successfully!")
                             st.rerun()
                         else:
@@ -630,13 +652,28 @@ elif page == "🛒 WSP Orders":
                         pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
                         drive_file_id = upload_pdf_to_drive(uploaded_pdf.read(), pdf_filename)
 
-                    # Save order to Google Sheets
-                    # Row format: Date, Order#, Customer, DriveFileID, SKU quantities...
-                    ws  = get_sheet("WSP Orders")
-                    row = [str(order_date), order_num, customer, drive_file_id] + [
-                        quantities[sku] if quantities[sku] > 0 else "" for sku in ALL_SKUS
-                    ]
-                    ws.append_row(row)
+                    # Save order to Google Sheets as a new column
+                    # Layout: Row1=Date, Row2=Order#, Row3=Customer, Row4=DriveFileID, Row5+=SKUs
+                    ws      = get_sheet("WSP Orders")
+                    data    = ws.get_all_values()
+                    # Find next empty column (column A is labels, orders start at B)
+                    next_col = len(data[0]) + 1 if data and data[0] else 2
+
+                    # Build the column values in order
+                    col_values = (
+                        [str(order_date), order_num, customer, drive_file_id] +
+                        [quantities[sku] if quantities[sku] > 0 else "" for sku in ALL_SKUS]
+                    )
+
+                    # Write each value to the correct row in the next column
+                    from gspread.utils import rowcol_to_a1
+                    cell_updates = []
+                    for row_idx, val in enumerate(col_values, start=1):
+                        cell_updates.append({
+                            "range": rowcol_to_a1(row_idx, next_col),
+                            "values": [[val]],
+                        })
+                    ws.batch_update(cell_updates)
                     st.success(f"✅ Order {order_num} saved!" + (" PDF uploaded." if drive_file_id else ""))
                     st.rerun()
                 except Exception as e:
