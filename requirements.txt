@@ -1,6 +1,7 @@
-streamlit
+-e streamlit
 requests
 openpyxl
 gspread
 google-auth
- 
+google-api-python-client
+pandas
