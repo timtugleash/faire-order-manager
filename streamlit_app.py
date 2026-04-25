@@ -550,9 +550,9 @@ if page == "📋 Orders":
     if role == "admin":
         excel_bytes = build_excel(all_orders)
         st.download_button(
-            label     = "⬇️ Download Excel (All Orders)",
+            label     = "⬇️ Download Excel (New Orders)",
             data      = excel_bytes,
-            file_name = "faire_orders.xlsx",
+            file_name = "new_orders.xlsx",
             mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
