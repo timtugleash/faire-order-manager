@@ -650,10 +650,19 @@ elif page == "🛒 WSP Orders":
                 try:
                     # Upload PDF to Google Drive if provided
                     drive_file_id = ""
-                    if uploaded_pdf is not None and DRIVE_FOLDER_ID:
-                        customer_safe = customer.replace("/", "-").replace("\\", "-")
-                        pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
-                        drive_file_id = upload_pdf_to_drive(uploaded_pdf.getvalue(), pdf_filename)
+                    if uploaded_pdf is not None:
+                        if not DRIVE_FOLDER_ID:
+                            st.error("DRIVE_FOLDER_ID is not set in Streamlit secrets.")
+                        else:
+                            try:
+                                customer_safe = customer.replace("/", "-").replace("\\", "-")
+                                pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
+                                pdf_data      = uploaded_pdf.getvalue()
+                                st.info(f"Uploading PDF: {pdf_filename} ({len(pdf_data)} bytes) to folder {DRIVE_FOLDER_ID}")
+                                drive_file_id = upload_pdf_to_drive(pdf_data, pdf_filename)
+                                st.info(f"Upload result: drive_file_id = '{drive_file_id}'")
+                            except Exception as pdf_err:
+                                st.error(f"PDF upload failed: {pdf_err}")
 
                     # Save order to Google Sheets as a new column
                     # Layout: Row1=Date, Row2=Order#, Row3=Customer, Row4=DriveFileID, Row5+=SKUs
