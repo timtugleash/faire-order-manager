@@ -483,12 +483,13 @@ elif page == "🛒 WSP Orders":
             for row in order_rows:
                 order_num = row[1]
                 orders_dict[order_num] = {
-                    "Order Date": row[0] if len(row) > 0 else "",
-                    "Customer":   row[2] if len(row) > 2 else "",
-                    "PDF":        "✅" if (len(row) > 3 and row[3]) else "—",
+                    "Order Date":    row[0] if len(row) > 0 else "",
+                    "Customer":      row[2] if len(row) > 2 else "",
+                    "PDF":           "✅" if (len(row) > 3 and row[3]) else "—",
+                    "drive_file_id": row[3] if len(row) > 3 else "",
                 }
                 for i, sku in enumerate(ALL_SKUS):
-                    col_idx = i + 4  # offset by 4 (date, order#, customer, drive_file_id)
+                    col_idx = i + 4
                     val = row[col_idx] if col_idx < len(row) else ""
                     orders_dict[order_num][sku] = val
 
@@ -512,6 +513,36 @@ elif page == "🛒 WSP Orders":
             df = pd.DataFrame(table_rows)
             st.dataframe(df, use_container_width=True, hide_index=True,
                          height=(len(table_rows) + 1) * 35 + 3)
+
+            # Delete an order
+            st.divider()
+            st.subheader("🗑️ Delete a WSP Order")
+            order_to_delete = st.selectbox("Select order to delete", options=["— select —"] + order_nums)
+            if order_to_delete != "— select —":
+                st.warning(f"You are about to delete order **{order_to_delete}** ({orders_dict[order_to_delete]['Customer']} — {orders_dict[order_to_delete]['Order Date']}). This cannot be undone.")
+                if st.button("🗑️ Confirm Delete", type="primary"):
+                    try:
+                        ws_del   = get_sheet("WSP Orders")
+                        all_rows = ws_del.get_all_values()
+                        row_index = None
+                        for i, row in enumerate(all_rows):
+                            if len(row) >= 2 and row[1] == order_to_delete:
+                                row_index = i + 1
+                                break
+                        if row_index:
+                            file_id = orders_dict[order_to_delete].get("drive_file_id", "")
+                            if file_id:
+                                try:
+                                    get_drive_service().files().delete(fileId=file_id).execute()
+                                except Exception:
+                                    pass
+                            ws_del.delete_rows(row_index)
+                            st.success(f"✅ Order {order_to_delete} deleted successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Could not find that order in the sheet.")
+                    except Exception as e:
+                        st.error(f"Failed to delete order: {e}")
         else:
             st.info("No WSP orders entered yet.")
 
