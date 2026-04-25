@@ -462,9 +462,14 @@ def finalize_orders_to_sheet(faire_orders: list, wsp_orders: list) -> tuple:
 
         # Layout: Row1 = "Order# - Customer", Row2 = Date, Row3+ = SKUs
         order_label = f"{order['order_number']} - {order['customer']}"
+        # Format date as mm/dd
+        try:
+            short_date = datetime.strptime(order["created_at"], "%Y-%m-%d").strftime("%m/%d")
+        except Exception:
+            short_date = order["created_at"]
         col_values  = [
-            order_label,            # Row 1: Order # - Customer
-            order["created_at"],    # Row 2: Order Date
+            order_label,   # Row 1: Order # - Customer
+            short_date,    # Row 2: Date as mm/dd
         ] + [
             sku_lookup.get(sku, "") for sku in ALL_SKUS  # Row 3+: SKUs
         ]
@@ -652,7 +657,11 @@ if page == "📋 Orders":
                         try:
                             added_faire, added_wsp = finalize_orders_to_sheet(faire_orders, wsp_orders)
                             st.session_state["finalize_confirm1"] = False
+                            # Clear orders from screen after finalizing
+                            if "faire_orders" in st.session_state:
+                                del st.session_state["faire_orders"]
                             st.success(f"✅ Done! {added_faire} Faire + {added_wsp} WSP order(s) added to All Orders tab.")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Failed to finalize: {e}")
                             st.session_state["finalize_confirm1"] = False
