@@ -338,36 +338,32 @@ elif page == "📊 Inventory":
     try:
         client = get_gsheet_client()
         sh     = client.open_by_key(SHEET_ID)
-        ws     = sh.worksheet("Inventory")
-        # Fetch a specific range to avoid formula evaluation issues
-        rows   = ws.get("A1:L40", value_render_option="FORMATTED_VALUE")
+        ws     = sh.worksheet("Inventory_Display")
+        rows   = ws.get_all_values()
 
-        if not rows:
+        if not rows or len(rows) < 2:
             st.info("No inventory data found.")
         else:
-            # Find header row (row with "SKU" in it)
-            header_row_idx = 0
-            for i, row in enumerate(rows):
-                if "SKU" in row:
-                    header_row_idx = i
-                    break
-
-            headers   = rows[header_row_idx]
-            data_rows = rows[header_row_idx + 1:]
+            headers   = rows[0]
+            data_rows = rows[1:]
 
             inv_data = []
             for row in data_rows:
                 if len(row) < 2 or not row[1]:
                     continue
                 inv_data.append({
-                    "Product":           row[0] if len(row) > 0 else "",
-                    "SKU":               row[1] if len(row) > 1 else "",
-                    "Storage Box":       row[2] if len(row) > 2 else "",
-                    "Pcs/Carton":        row[3] if len(row) > 3 else "",
-                    "Total Received":    row[4] if len(row) > 4 else "",
-                    "Current Inventory": row[5] if len(row) > 5 else "",
-                    "Avg Units/Day":     round(float(row[8]), 2) if len(row) > 8 and row[8] else "",
-                    "Days Available":    round(float(row[9]), 1) if len(row) > 9 and row[9] else "",
+                    "Product":           row[0]  if len(row) > 0  else "",
+                    "SKU":               row[1]  if len(row) > 1  else "",
+                    "Storage Box":       row[2]  if len(row) > 2  else "",
+                    "Pcs/Carton":        row[3]  if len(row) > 3  else "",
+                    "Total Received":    row[4]  if len(row) > 4  else "",
+                    "Current Inventory": row[5]  if len(row) > 5  else "",
+                    "Storage Box Qty":   row[6]  if len(row) > 6  else "",
+                    "Total Output":      row[7]  if len(row) > 7  else "",
+                    "Avg Units/Day":     row[8]  if len(row) > 8  else "",
+                    "Days Available":    row[9]  if len(row) > 9  else "",
+                    "Refill Qty (pcs)":  row[10] if len(row) > 10 else "",
+                    "Refill Qty (ctn)":  row[11] if len(row) > 11 else "",
                 })
 
             df = pd.DataFrame(inv_data)
