@@ -367,7 +367,7 @@ elif page == "📊 Inventory":
                 })
 
             df = pd.DataFrame(inv_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, use_container_width=True, hide_index=True, height=(len(inv_data) + 1) * 35 + 3)
 
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
@@ -437,19 +437,13 @@ elif page == "🛒 WSP Orders":
         with col2:
             order_num = st.text_input("Order #")
         with col3:
-            customer = st.text_input("Customer", value="WholesalePet.com")
+            customer = st.text_input("Customer", value="")
 
         st.markdown("**Enter quantities for each SKU (leave at 0 if not ordered):**")
 
-        quantities   = {}
-        cols_per_row = 4
-        sku_chunks   = [ALL_SKUS[i:i + cols_per_row] for i in range(0, len(ALL_SKUS), cols_per_row)]
-
-        for chunk in sku_chunks:
-            cols = st.columns(cols_per_row)
-            for i, sku in enumerate(chunk):
-                with cols[i]:
-                    quantities[sku] = st.number_input(sku, min_value=0, value=0, step=1, key=f"wsp_{sku}")
+        quantities = {}
+        for sku in ALL_SKUS:
+            quantities[sku] = st.number_input(sku, min_value=0, value=0, step=1, key=f"wsp_{sku}")
 
         submitted = st.form_submit_button("💾 Save WSP Order")
 
