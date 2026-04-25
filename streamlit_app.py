@@ -126,10 +126,15 @@ def get_sheet(tab_name: str):
 
 def upload_pdf_to_drive(pdf_bytes: bytes, filename: str) -> str:
     """Upload a PDF to Google Drive and return the file ID."""
-    service    = get_drive_service()
-    media      = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf")
-    file_meta  = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
-    file       = service.files().create(body=file_meta, media_body=media, fields="id").execute()
+    # Build a fresh service each time to avoid broken pipe from cached connections
+    creds   = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES,
+    )
+    service = build("drive", "v3", credentials=creds)
+    media   = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=True)
+    file_meta = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
+    file    = service.files().create(body=file_meta, media_body=media, fields="id").execute()
     return file.get("id", "")
 
 
