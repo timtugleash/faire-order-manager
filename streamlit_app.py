@@ -34,6 +34,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from google.auth.transport.requests import Request as GoogleAuthRequest
+import base64
 from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -124,59 +125,45 @@ def get_sheet(tab_name: str):
     return sh.worksheet(tab_name)
 
 
-def upload_pdf_to_drive(pdf_bytes: bytes, filename: str) -> str:
-    """Upload a PDF to Google Drive using a multipart upload without storage quota."""
-    import googleapiclient.http as ghttp
-    creds   = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES,
-    )
-    service   = build("drive", "v3", credentials=creds)
-    buf       = io.BytesIO(pdf_bytes)
-    media     = ghttp.MediaIoBaseUpload(buf, mimetype="application/pdf", resumable=False)
-    file_meta = {
-        "name":    filename,
-        "parents": [DRIVE_FOLDER_ID],
-    }
-    file = service.files().create(
-        body              = file_meta,
-        media_body        = media,
-        fields            = "id",
-        supportsAllDrives = True,
-    ).execute()
-    file_id = file.get("id", "")
-
-    # Transfer ownership to the account owner so the file uses their quota
-    owner_email = st.secrets.get("OWNER_EMAIL", "")
-    if owner_email and file_id:
+def store_pdf_in_sheet(pdf_bytes: bytes, filename: str) -> str:
+    """Store PDF as base64 in a dedicated Google Sheet tab. Returns a key to retrieve it."""
+    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    try:
+        sh = get_gsheet_client().open_by_key(SHEET_ID)
         try:
-            service.permissions().create(
-                fileId            = file_id,
-                transferOwnership = True,
-                supportsAllDrives = True,
-                body              = {
-                    "type":         "user",
-                    "role":         "owner",
-                    "emailAddress": owner_email,
-                },
-            ).execute()
+            pdf_ws = sh.worksheet("PDF_Store")
         except Exception:
-            pass  # Ownership transfer may not always work but file still uploads
+            pdf_ws = sh.add_worksheet(title="PDF_Store", rows=1000, cols=3)
+            pdf_ws.append_row(["key", "filename", "data"])
+        pdf_ws.append_row([filename, filename, b64])
+        return filename  # use filename as the lookup key
+    except Exception as e:
+        raise Exception(f"PDF store failed: {e}")
 
-    return file_id
+
+def retrieve_pdf_from_sheet(key: str) -> bytes:
+    """Retrieve a PDF stored as base64 in Google Sheets by key."""
+    sh     = get_gsheet_client().open_by_key(SHEET_ID)
+    pdf_ws = sh.worksheet("PDF_Store")
+    rows   = pdf_ws.get_all_values()
+    for row in rows[1:]:
+        if len(row) >= 3 and row[0] == key:
+            return base64.b64decode(row[2])
+    raise Exception(f"PDF not found for key: {key}")
 
 
-def download_pdf_from_drive(file_id: str) -> bytes:
-    """Download a PDF from Google Drive by file ID."""
-    service = get_drive_service()
-    request = service.files().get_media(fileId=file_id)
-    buf     = io.BytesIO()
-    dl      = MediaIoBaseDownload(buf, request)
-    done    = False
-    while not done:
-        _, done = dl.next_chunk()
-    buf.seek(0)
-    return buf.read()
+def delete_pdf_from_sheet(key: str):
+    """Delete a PDF entry from the PDF_Store sheet."""
+    try:
+        sh     = get_gsheet_client().open_by_key(SHEET_ID)
+        pdf_ws = sh.worksheet("PDF_Store")
+        rows   = pdf_ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) >= 1 and row[0] == key:
+                pdf_ws.delete_rows(i)
+                break
+    except Exception:
+        pass
 
 
 def get_wsp_orders() -> list:
@@ -451,7 +438,7 @@ if page == "📋 Orders":
                     st.caption(f"Drive ID: {order.get('drive_file_id', 'EMPTY')}")
                 if order.get("drive_file_id"):
                     try:
-                        pdf_bytes = download_pdf_from_drive(order["drive_file_id"])
+                        pdf_bytes = retrieve_pdf_from_sheet(order["drive_file_id"])
                         st.download_button(
                             label     = "⬇️ PDF",
                             data      = pdf_bytes,
@@ -644,10 +631,7 @@ elif page == "🛒 WSP Orders":
                         if col_index:
                             file_id = orders_dict[order_to_delete].get("drive_file_id", "")
                             if file_id:
-                                try:
-                                    get_drive_service().files().delete(fileId=file_id).execute()
-                                except Exception:
-                                    pass
+                                delete_pdf_from_sheet(file_id)
                             ws_del.delete_columns(col_index)
                             st.success(f"✅ Order {order_to_delete} deleted successfully!")
                             st.rerun()
@@ -698,8 +682,8 @@ elif page == "🛒 WSP Orders":
                                 customer_safe = customer.replace("/", "-").replace("\\", "-")
                                 pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
                                 pdf_data      = uploaded_pdf.getvalue()
-                                drive_file_id = upload_pdf_to_drive(pdf_data, pdf_filename)
-                                st.session_state["wsp_debug"] = f"✅ PDF uploaded. drive_file_id = '{drive_file_id}' | size = {len(pdf_data)} bytes"
+                                drive_file_id = store_pdf_in_sheet(pdf_data, pdf_filename)
+                                st.session_state["wsp_debug"] = f"✅ PDF stored. key = '{drive_file_id}' | size = {len(pdf_data)} bytes"
                             except Exception as pdf_err:
                                 st.session_state["wsp_debug"] = f"❌ PDF upload failed: {pdf_err}"
 
