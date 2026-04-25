@@ -311,9 +311,9 @@ def get_existing_order_numbers_from_sheet() -> set:
     """Read order numbers already stored in the Faire Orders sheet tab."""
     try:
         ws   = get_sheet("Faire Orders")
-        # Order # is in row 2 (index 1), columns B onwards
-        row2 = ws.row_values(2)
-        return set(v for v in row2[1:] if v)  # skip column A label
+        # Order # is in row 3 (index 2), columns B onwards
+        row3 = ws.row_values(3)
+        return set(v for v in row3[1:] if v)  # skip column A label
     except Exception:
         return set()
 
@@ -338,12 +338,13 @@ def sync_orders_to_sheet(orders: list):
             sku_lookup = {item["sku"]: item["quantity"] for item in order["items"]}
 
             col_values = [
-                order["created_at"],    # Row 1: Order Date
-                order["order_number"],  # Row 2: Order #
-                order["customer"],      # Row 3: Customer
-                order["raw_id"],        # Row 4: raw_id for packing slip API
+                order["raw_id"],        # Row 1: raw_id (Faire internal ID)
+                order["created_at"],    # Row 2: Order Date
+                order["order_number"],  # Row 3: Order #
+                order["customer"],      # Row 4: Customer
+                "",                     # Row 5: blank separator
             ] + [
-                sku_lookup.get(sku, "") for sku in ALL_SKUS  # Row 5+: SKUs
+                sku_lookup.get(sku, "") for sku in ALL_SKUS  # Row 6+: SKUs
             ]
 
             cell_updates = []
@@ -382,13 +383,13 @@ def load_orders_from_sheet() -> list:
                 except IndexError:
                     return ""
 
-            order_num = cell(1)
+            order_num = cell(2)  # Row 3 = Order #
             if not order_num:
                 continue
 
             items = []
             for i, sku in enumerate(ALL_SKUS):
-                row_idx = i + 4
+                row_idx = i + 5  # Row 6+ = SKUs
                 qty_str = cell(row_idx)
                 try:
                     qty = int(qty_str)
@@ -399,10 +400,10 @@ def load_orders_from_sheet() -> list:
 
             orders.append({
                 "order_number": order_num,
-                "raw_id":       cell(3) if cell(3) else order_num,  # Row 4 stores raw_id
-                "created_at":   cell(0),
+                "raw_id":       cell(0),   # Row 1 = raw_id
+                "created_at":   cell(1),   # Row 2 = Order Date
                 "state":        "NEW",
-                "customer":     cell(2),
+                "customer":     cell(3),   # Row 4 = Customer
                 "drive_file_id": "",
                 "items":        items,
                 "source":       "FAIRE",
