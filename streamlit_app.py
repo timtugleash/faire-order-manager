@@ -650,17 +650,18 @@ elif page == "🛒 WSP Orders":
                 try:
                     # Upload PDF to Google Drive if provided
                     drive_file_id = ""
-                    if uploaded_pdf and DRIVE_FOLDER_ID:
+                    if uploaded_pdf is not None and DRIVE_FOLDER_ID:
                         customer_safe = customer.replace("/", "-").replace("\\", "-")
                         pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
-                        drive_file_id = upload_pdf_to_drive(uploaded_pdf.read(), pdf_filename)
+                        drive_file_id = upload_pdf_to_drive(uploaded_pdf.getvalue(), pdf_filename)
 
                     # Save order to Google Sheets as a new column
                     # Layout: Row1=Date, Row2=Order#, Row3=Customer, Row4=DriveFileID, Row5+=SKUs
-                    ws      = get_sheet("WSP Orders")
-                    data    = ws.get_all_values()
-                    # Find next empty column (column A is labels, orders start at B)
-                    next_col = len(data[0]) + 1 if data and data[0] else 2
+                    ws   = get_sheet("WSP Orders")
+                    data = ws.get_all_values()
+                    # Find next empty column by checking max cols across all rows
+                    max_cols = max((len(row) for row in data), default=0)
+                    next_col = max_cols + 1
 
                     # Build the column values in order
                     col_values = (
