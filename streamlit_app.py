@@ -337,7 +337,7 @@ elif page == "📊 Inventory":
 
     try:
         ws   = get_sheet("Inventory")
-        rows = ws.get_all_values()
+        rows = ws.get_all_values(value_render_option="FORMATTED_VALUE")
 
         if not rows:
             st.info("No inventory data found.")
