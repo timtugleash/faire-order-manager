@@ -33,6 +33,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from google.auth.transport.requests import Request
 from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -426,19 +427,25 @@ elif page == "📊 Inventory":
     st.header("📊 Current Inventory")
     st.caption("Read-only view from Google Sheets.")
 
-    def sheet_to_excel(tab_name: str, sheet_title: str) -> bytes:
-        """Download a Google Sheet tab and return as Excel bytes."""
-        ws   = get_sheet(tab_name)
-        rows = ws.get_all_values()
-        wb   = openpyxl.Workbook()
-        ws2  = wb.active
-        ws2.title = sheet_title
-        for row in rows:
-            ws2.append(row)
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        return buf.read()
+    def sheet_to_excel(tab_name: str) -> bytes:
+        """Export a Google Sheet tab as formatted Excel using Google export API."""
+        # Get the sheet GID (tab ID) for the specific tab
+        client = get_gsheet_client()
+        sh     = client.open_by_key(SHEET_ID)
+        ws     = sh.worksheet(tab_name)
+        gid    = ws.id
+
+        # Use Google Sheets export URL to download as formatted xlsx
+        export_url = (
+            f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
+            f"?format=xlsx&gid={gid}"
+        )
+        creds = get_credentials()
+        creds.refresh(requests.Request())
+        headers  = {"Authorization": f"Bearer {creds.token}"}
+        response = requests.get(export_url, headers=headers)
+        response.raise_for_status()
+        return response.content
 
     try:
         client = get_gsheet_client()
@@ -478,7 +485,7 @@ elif page == "📊 Inventory":
                 dl_col1, dl_col2 = st.columns(2)
                 with dl_col1:
                     try:
-                        inv_excel = sheet_to_excel("Inventory", "Inventory")
+                        inv_excel = sheet_to_excel("Inventory")
                         st.download_button(
                             label     = "⬇️ Download Inventory",
                             data      = inv_excel,
@@ -489,7 +496,7 @@ elif page == "📊 Inventory":
                         st.error(f"Could not prepare Inventory download: {e}")
                 with dl_col2:
                     try:
-                        rcv_excel = sheet_to_excel("Inventory Received", "Inventory Received")
+                        rcv_excel = sheet_to_excel("Inventory Received")
                         st.download_button(
                             label     = "⬇️ Download Inventory Received",
                             data      = rcv_excel,
