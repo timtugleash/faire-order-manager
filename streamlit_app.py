@@ -160,18 +160,20 @@ def get_wsp_orders() -> list:
             return []
 
         orders = []
-        # Each column from index 1 onwards is one order
-        num_cols = len(data[0])
+        num_cols = max(len(row) for row in data)
         for col in range(1, num_cols):
-            def cell(row_idx):
+            def cell(row_idx, c=col):
                 try:
-                    return data[row_idx][col]
+                    val = data[row_idx][c]
+                    return val
                 except IndexError:
                     return ""
 
             order_num = cell(1)  # Row 2 = Order #
             if not order_num:
                 continue
+
+            drive_file_id = cell(3)  # Row 4 = DriveFileID
 
             items = []
             for i, sku in enumerate(ALL_SKUS):
@@ -187,15 +189,16 @@ def get_wsp_orders() -> list:
             orders.append({
                 "order_number":  order_num,
                 "raw_id":        f"wsp_{order_num}",
-                "created_at":    cell(0),   # Row 1 = Order Date
+                "created_at":    cell(0),
                 "state":         "PROCESSING",
-                "customer":      cell(2),   # Row 3 = Customer
-                "drive_file_id": cell(3),   # Row 4 = DriveFileID
+                "customer":      cell(2),
+                "drive_file_id": drive_file_id,
                 "items":         items,
                 "source":        "WSP",
             })
         return orders
-    except Exception:
+    except Exception as e:
+        st.error(f"WSP fetch error: {e}")
         return []
 
 
@@ -411,6 +414,8 @@ if page == "📋 Orders":
         with cols[5]:
             if order["source"] == "WSP":
                 # Download from Google Drive if file ID exists
+                if role == "admin":
+                    st.caption(f"Drive ID: {order.get('drive_file_id', 'EMPTY')}")
                 if order.get("drive_file_id"):
                     try:
                         pdf_bytes = download_pdf_from_drive(order["drive_file_id"])
@@ -540,9 +545,6 @@ elif page == "🛒 WSP Orders":
 
     # View existing WSP orders
     try:
-        ws         = get_sheet("WSP Orders")
-        data       = ws.get_all_values()
-        order_rows = [r for r in data[1:] if len(r) >= 2 and r[1]]
 
         wsp_orders_view = get_wsp_orders()
         if wsp_orders_view:
@@ -618,6 +620,7 @@ elif page == "🛒 WSP Orders":
 
     except Exception as e:
         st.error(f"Could not load WSP orders: {e}")
+        wsp_orders_view = []
 
     st.divider()
     st.subheader("➕ Enter New WSP Order")
