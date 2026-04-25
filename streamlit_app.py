@@ -426,6 +426,20 @@ elif page == "📊 Inventory":
     st.header("📊 Current Inventory")
     st.caption("Read-only view from Google Sheets.")
 
+    def sheet_to_excel(tab_name: str, sheet_title: str) -> bytes:
+        """Download a Google Sheet tab and return as Excel bytes."""
+        ws   = get_sheet(tab_name)
+        rows = ws.get_all_values()
+        wb   = openpyxl.Workbook()
+        ws2  = wb.active
+        ws2.title = sheet_title
+        for row in rows:
+            ws2.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.read()
+
     try:
         client = get_gsheet_client()
         sh     = client.open_by_key(SHEET_ID)
@@ -457,6 +471,33 @@ elif page == "📊 Inventory":
 
             df = pd.DataFrame(inv_data)
             st.dataframe(df, use_container_width=True, hide_index=True, height=(len(inv_data) + 1) * 35 + 3)
+
+            if role == "admin":
+                st.divider()
+                st.subheader("⬇️ Download Sheets")
+                dl_col1, dl_col2 = st.columns(2)
+                with dl_col1:
+                    try:
+                        inv_excel = sheet_to_excel("Inventory", "Inventory")
+                        st.download_button(
+                            label     = "⬇️ Download Inventory",
+                            data      = inv_excel,
+                            file_name = "inventory.xlsx",
+                            mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                    except Exception as e:
+                        st.error(f"Could not prepare Inventory download: {e}")
+                with dl_col2:
+                    try:
+                        rcv_excel = sheet_to_excel("Inventory Received", "Inventory Received")
+                        st.download_button(
+                            label     = "⬇️ Download Inventory Received",
+                            data      = rcv_excel,
+                            file_name = "inventory_received.xlsx",
+                            mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                    except Exception as e:
+                        st.error(f"Could not prepare Inventory Received download: {e}")
 
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
