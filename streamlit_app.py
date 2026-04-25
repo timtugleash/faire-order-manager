@@ -266,7 +266,6 @@ def parse_order(data: dict) -> dict:
     }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def fetch_faire_orders() -> list:
     headers = {"X-FAIRE-ACCESS-TOKEN": FAIRE_API_KEY}
     orders  = []
@@ -302,6 +301,116 @@ def fetch_packing_slip(raw_id: str) -> bytes:
     r       = requests.get(url, headers=headers)
     r.raise_for_status()
     return r.content
+
+
+# ─────────────────────────────────────────────
+# GOOGLE SHEETS SYNC
+# ─────────────────────────────────────────────
+
+def get_existing_order_numbers_from_sheet() -> set:
+    """Read order numbers already stored in the Faire Orders sheet tab."""
+    try:
+        ws   = get_sheet("Faire Orders")
+        # Order # is in row 2 (index 1), columns B onwards
+        row2 = ws.row_values(2)
+        return set(v for v in row2[1:] if v)  # skip column A label
+    except Exception:
+        return set()
+
+
+def sync_orders_to_sheet(orders: list):
+    """Add new orders as columns to the Faire Orders sheet. Never overwrites existing."""
+    try:
+        ws               = get_sheet("Faire Orders")
+        existing_nums    = get_existing_order_numbers_from_sheet()
+        new_orders       = [o for o in orders if o["order_number"] not in existing_nums]
+
+        if not new_orders:
+            return 0
+
+        data     = ws.get_all_values()
+        max_cols = max((len(row) for row in data), default=0)
+
+        from gspread.utils import rowcol_to_a1
+
+        for order in new_orders:
+            next_col   = max_cols + 1
+            sku_lookup = {item["sku"]: item["quantity"] for item in order["items"]}
+
+            col_values = [
+                order["created_at"],    # Row 1: Order Date
+                order["order_number"],  # Row 2: Order #
+                order["customer"],      # Row 3: Customer
+                order["raw_id"],        # Row 4: raw_id for packing slip API
+            ] + [
+                sku_lookup.get(sku, "") for sku in ALL_SKUS  # Row 5+: SKUs
+            ]
+
+            cell_updates = []
+            for row_idx, val in enumerate(col_values, start=1):
+                if val != "":
+                    cell_updates.append({
+                        "range":  rowcol_to_a1(row_idx, next_col),
+                        "values": [[val]],
+                    })
+            if cell_updates:
+                ws.batch_update(cell_updates)
+            max_cols += 1
+
+        return len(new_orders)
+    except Exception as e:
+        st.warning(f"Could not sync to Google Sheets: {e}")
+        return 0
+
+
+def load_orders_from_sheet() -> list:
+    """Load previously synced Faire orders from Google Sheets."""
+    try:
+        ws   = get_sheet("Faire Orders")
+        data = ws.get_all_values()
+
+        if not data or len(data[0]) < 2:
+            return []
+
+        orders    = []
+        num_cols  = max(len(row) for row in data)
+
+        for col in range(1, num_cols):
+            def cell(row_idx, c=col):
+                try:
+                    return data[row_idx][c]
+                except IndexError:
+                    return ""
+
+            order_num = cell(1)
+            if not order_num:
+                continue
+
+            items = []
+            for i, sku in enumerate(ALL_SKUS):
+                row_idx = i + 4
+                qty_str = cell(row_idx)
+                try:
+                    qty = int(qty_str)
+                except (ValueError, TypeError):
+                    qty = 0
+                if qty > 0:
+                    items.append({"sku": sku, "quantity": qty})
+
+            orders.append({
+                "order_number": order_num,
+                "raw_id":       cell(3) if cell(3) else order_num,  # Row 4 stores raw_id
+                "created_at":   cell(0),
+                "state":        "NEW",
+                "customer":     cell(2),
+                "drive_file_id": "",
+                "items":        items,
+                "source":       "FAIRE",
+            })
+        return orders
+    except Exception as e:
+        st.warning(f"Could not load orders from sheet: {e}")
+        return []
 
 
 # ─────────────────────────────────────────────
@@ -396,26 +505,37 @@ if page == "📋 Orders":
         st.error("No Faire API key found.")
         st.stop()
 
-    if st.button("🔄 Refresh Orders"):
-        st.cache_data.clear()
+    # Load orders from Google Sheets on first visit
+    if "faire_orders" not in st.session_state:
+        with st.spinner("Loading orders from sheet..."):
+            st.session_state["faire_orders"] = load_orders_from_sheet()
 
-    with st.spinner("Fetching orders..."):
-        try:
-            faire_orders = fetch_faire_orders()
-        except Exception as e:
-            st.error(f"Failed to fetch Faire orders: {e}")
-            faire_orders = []
+    # Manual refresh button — pulls from Faire API and syncs new orders to sheet
+    if st.button("🔄 Refresh from Faire"):
+        with st.spinner("Fetching latest orders from Faire..."):
+            try:
+                fresh_orders = fetch_faire_orders()
+                added        = sync_orders_to_sheet(fresh_orders)
+                # Reload from sheet to get full up-to-date list
+                st.session_state["faire_orders"] = load_orders_from_sheet()
+                if added:
+                    st.success(f"✅ {added} new order(s) added to sheet!")
+                else:
+                    st.info("No new orders found — sheet is already up to date.")
+            except Exception as e:
+                st.error(f"Failed to fetch from Faire: {e}")
 
-        wsp_orders = get_wsp_orders()
-        all_orders = faire_orders + wsp_orders
+    faire_orders = st.session_state.get("faire_orders", [])
+    wsp_orders   = get_wsp_orders()
+    all_orders   = faire_orders + wsp_orders
 
     if not all_orders:
-        st.info("No NEW or PROCESSING orders found.")
+        st.info("No orders found. Click '🔄 Refresh from Faire' to pull latest orders.")
         st.stop()
 
     faire_count = len(faire_orders)
     wsp_count   = len(wsp_orders)
-    st.success(f"**{len(all_orders)} order(s)** found — {faire_count} from Faire, {wsp_count} from WholesalePet.com")
+    st.success(f"**{len(all_orders)} order(s)** — {faire_count} from Faire, {wsp_count} from WholesalePet.com")
 
     if role == "admin":
         excel_bytes = build_excel(all_orders)
