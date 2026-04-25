@@ -494,6 +494,29 @@ def finalize_orders_to_sheet(faire_orders: list, wsp_orders: list) -> tuple:
 
 
 # ─────────────────────────────────────────────
+# SHEET EXPORT
+# ─────────────────────────────────────────────
+
+def sheet_to_excel(tab_name: str) -> bytes:
+    """Export a Google Sheet tab as formatted Excel using Google export API."""
+    client = get_gsheet_client()
+    sh     = client.open_by_key(SHEET_ID)
+    ws     = sh.worksheet(tab_name)
+    gid    = ws.id
+
+    export_url = (
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
+        f"?format=xlsx&gid={gid}"
+    )
+    creds = get_credentials()
+    creds.refresh(GoogleAuthRequest())
+    headers  = {"Authorization": f"Bearer {creds.token}"}
+    response = requests.get(export_url, headers=headers)
+    response.raise_for_status()
+    return response.content
+
+
+# ─────────────────────────────────────────────
 # EXCEL BUILDER
 # ─────────────────────────────────────────────
 def build_excel(orders: list) -> bytes:
@@ -750,25 +773,7 @@ elif page == "📊 Inventory":
         except Exception as e:
             st.error(f"Could not prepare Inventory download: {e}")
 
-    def sheet_to_excel(tab_name: str) -> bytes:
-        """Export a Google Sheet tab as formatted Excel using Google export API."""
-        # Get the sheet GID (tab ID) for the specific tab
-        client = get_gsheet_client()
-        sh     = client.open_by_key(SHEET_ID)
-        ws     = sh.worksheet(tab_name)
-        gid    = ws.id
 
-        # Use Google Sheets export URL to download as formatted xlsx
-        export_url = (
-            f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
-            f"?format=xlsx&gid={gid}"
-        )
-        creds = get_credentials()
-        creds.refresh(GoogleAuthRequest())
-        headers  = {"Authorization": f"Bearer {creds.token}"}
-        response = requests.get(export_url, headers=headers)
-        response.raise_for_status()
-        return response.content
 
     if st.session_state["inv_data"] is None:
         with st.spinner("Loading inventory..."):
