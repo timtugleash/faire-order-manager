@@ -450,9 +450,7 @@ if page == "📋 Orders":
 
         with cols[5]:
             if order["source"] == "WSP":
-                # Download from Google Drive if file ID exists
-                if role == "admin":
-                    st.caption(f"Drive ID: {order.get('drive_file_id', 'EMPTY')}")
+                # Download PDF from Google Sheets storage if available
                 if order.get("drive_file_id"):
                     try:
                         pdf_bytes = retrieve_pdf_from_sheet(order["drive_file_id"])
@@ -580,12 +578,7 @@ elif page == "🛒 WSP Orders":
     st.header("🛒 WholesalePet.com Orders")
     st.caption("Admin only. Enter new WSP orders below.")
 
-    # Show persisted debug message if any
-    if "wsp_debug" in st.session_state:
-        st.info(st.session_state["wsp_debug"])
-        if st.button("Clear debug message"):
-            del st.session_state["wsp_debug"]
-            st.rerun()
+
 
     # View existing WSP orders
     try:
@@ -700,7 +693,6 @@ elif page == "🛒 WSP Orders":
                                 pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
                                 pdf_data      = uploaded_pdf.getvalue()
                                 drive_file_id = store_pdf_in_sheet(pdf_data, pdf_filename)
-                                st.session_state["wsp_debug"] = f"✅ PDF stored. key = '{drive_file_id}' | size = {len(pdf_data)} bytes"
                             except Exception as pdf_err:
                                 st.session_state["wsp_debug"] = f"❌ PDF upload failed: {pdf_err}"
 
