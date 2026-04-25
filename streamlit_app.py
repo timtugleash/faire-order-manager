@@ -3,26 +3,24 @@ Faire Order Manager — Streamlit App
 =====================================
 - Role-based login (admin / user)
 - Pulls NEW and PROCESSING orders from Faire API
-- Downloads packing slips as PDFs
+- WSP orders appear on Orders screen as PROCESSING
+- PDF packing slip upload on WSP screen, download on Orders screen
 - Downloads order data as Excel
 - View Current Inventory from Google Sheets
-- WSP Orders entry (admin only)
 
 SETUP:
-  pip install streamlit requests openpyxl gspread google-auth pandas
+  pip install streamlit requests openpyxl gspread google-auth google-api-python-client pandas
 
 STREAMLIT SECRETS FORMAT:
   FAIRE_API_KEY = "..."
   ADMIN_PASSWORD = "..."
   USER_PASSWORD = "..."
   SHEET_ID = "..."
+  DRIVE_FOLDER_ID = "..."  # Google Drive folder ID for packing slip PDFs
 
   [gcp_service_account]
   type = "service_account"
   project_id = "..."
-  private_key_id = "..."
-  private_key = "..."
-  client_email = "..."
   ...
 """
 
@@ -33,6 +31,8 @@ import pandas as pd
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -40,8 +40,9 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-FAIRE_API_KEY = st.secrets.get("FAIRE_API_KEY", "")
-SHEET_ID      = st.secrets.get("SHEET_ID", "")
+FAIRE_API_KEY    = st.secrets.get("FAIRE_API_KEY", "")
+SHEET_ID         = st.secrets.get("SHEET_ID", "")
+DRIVE_FOLDER_ID  = st.secrets.get("DRIVE_FOLDER_ID", "")
 
 ALL_SKUS = [
     "T008-SBLK", "T008-MBLK", "T008-LBLK",
@@ -93,25 +94,88 @@ if not st.session_state.get("authenticated"):
 role = st.session_state.get("role", "user")
 
 # ─────────────────────────────────────────────
-# GOOGLE SHEETS CONNECTION
+# GOOGLE SHEETS + DRIVE CONNECTION
 # ─────────────────────────────────────────────
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+@st.cache_resource
+def get_credentials():
+    return Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES,
+    )
+
 @st.cache_resource
 def get_gsheet_client():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=scopes,
-    )
-    return gspread.authorize(creds)
+    return gspread.authorize(get_credentials())
+
+@st.cache_resource
+def get_drive_service():
+    return build("drive", "v3", credentials=get_credentials())
 
 
 def get_sheet(tab_name: str):
     client = get_gsheet_client()
     sh     = client.open_by_key(SHEET_ID)
     return sh.worksheet(tab_name)
+
+
+def upload_pdf_to_drive(pdf_bytes: bytes, filename: str) -> str:
+    """Upload a PDF to Google Drive and return the file ID."""
+    service    = get_drive_service()
+    media      = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf")
+    file_meta  = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
+    file       = service.files().create(body=file_meta, media_body=media, fields="id").execute()
+    return file.get("id", "")
+
+
+def download_pdf_from_drive(file_id: str) -> bytes:
+    """Download a PDF from Google Drive by file ID."""
+    service = get_drive_service()
+    request = service.files().get_media(fileId=file_id)
+    buf     = io.BytesIO()
+    dl      = MediaIoBaseDownload(buf, request)
+    done    = False
+    while not done:
+        _, done = dl.next_chunk()
+    buf.seek(0)
+    return buf.read()
+
+
+def get_wsp_orders() -> list:
+    """Fetch WSP orders from Google Sheets and return as list of order dicts."""
+    try:
+        ws         = get_sheet("WSP Orders")
+        data       = ws.get_all_values()
+        order_rows = [r for r in data[1:] if len(r) >= 2 and r[1]]
+        orders     = []
+        for row in order_rows:
+            items = []
+            for i, sku in enumerate(ALL_SKUS):
+                col_idx = i + 4  # Date, Order#, Customer, DriveFileID, then SKUs
+                qty_str = row[col_idx] if col_idx < len(row) else ""
+                try:
+                    qty = int(qty_str)
+                except (ValueError, TypeError):
+                    qty = 0
+                if qty > 0:
+                    items.append({"sku": sku, "quantity": qty})
+            orders.append({
+                "order_number": row[1],
+                "raw_id":       f"wsp_{row[1]}",
+                "created_at":   row[0] if len(row) > 0 else "",
+                "state":        "PROCESSING",
+                "customer":     row[2] if len(row) > 2 else "",
+                "drive_file_id": row[3] if len(row) > 3 else "",
+                "items":        items,
+                "source":       "WSP",
+            })
+        return orders
+    except Exception:
+        return []
 
 
 # ─────────────────────────────────────────────
@@ -135,12 +199,14 @@ def parse_order(data: dict) -> dict:
         "created_at":   created,
         "state":        data.get("state", ""),
         "customer":     data.get("address", {}).get("company_name", ""),
+        "drive_file_id": "",
         "items":        items,
+        "source":       "FAIRE",
     }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_orders() -> list:
+def fetch_faire_orders() -> list:
     headers = {"X-FAIRE-ACCESS-TOKEN": FAIRE_API_KEY}
     orders  = []
     cursor  = None
@@ -263,7 +329,7 @@ st.sidebar.caption(f"Logged in as **{st.session_state.username}**")
 # ─────────────────────────────────────────────
 if page == "📋 Orders":
     st.header("📋 New & Processing Orders")
-    st.caption("Showing NEW and PROCESSING orders from Faire only.")
+    st.caption("Showing NEW and PROCESSING orders from Faire and WholesalePet.com.")
 
     if not FAIRE_API_KEY:
         st.error("No Faire API key found.")
@@ -272,21 +338,26 @@ if page == "📋 Orders":
     if st.button("🔄 Refresh Orders"):
         st.cache_data.clear()
 
-    with st.spinner("Fetching orders from Faire..."):
+    with st.spinner("Fetching orders..."):
         try:
-            orders = fetch_orders()
+            faire_orders = fetch_faire_orders()
         except Exception as e:
-            st.error(f"Failed to fetch orders: {e}")
-            st.stop()
+            st.error(f"Failed to fetch Faire orders: {e}")
+            faire_orders = []
 
-    if not orders:
+        wsp_orders = get_wsp_orders()
+        all_orders = faire_orders + wsp_orders
+
+    if not all_orders:
         st.info("No NEW or PROCESSING orders found.")
         st.stop()
 
-    st.success(f"**{len(orders)} order(s)** found.")
+    faire_count = len(faire_orders)
+    wsp_count   = len(wsp_orders)
+    st.success(f"**{len(all_orders)} order(s)** found — {faire_count} from Faire, {wsp_count} from WholesalePet.com")
 
     if role == "admin":
-        excel_bytes = build_excel(orders)
+        excel_bytes = build_excel(all_orders)
         st.download_button(
             label     = "⬇️ Download Excel (All Orders)",
             data      = excel_bytes,
@@ -296,36 +367,56 @@ if page == "📋 Orders":
 
     st.divider()
 
-    cols = st.columns([2, 3, 2, 2, 2])
+    cols = st.columns([2, 3, 2, 2, 1, 2])
     cols[0].markdown("**Order #**")
     cols[1].markdown("**Customer**")
     cols[2].markdown("**Date**")
     cols[3].markdown("**Status**")
-    cols[4].markdown("**Packing Slip**")
+    cols[4].markdown("**Source**")
+    cols[5].markdown("**Packing Slip**")
     st.divider()
 
-    for order in orders:
-        cols = st.columns([2, 3, 2, 2, 2])
+    for order in all_orders:
+        cols = st.columns([2, 3, 2, 2, 1, 2])
         cols[0].write(order["order_number"])
         cols[1].write(order["customer"] or "—")
         cols[2].write(order["created_at"])
         cols[3].write(order["state"])
+        cols[4].write("🛒 WSP" if order["source"] == "WSP" else "🏪 Faire")
 
         customer_safe = (order["customer"] or "Unknown").replace("/", "-").replace("\\", "-")
         filename      = f"{order['order_number']}_{customer_safe}_PackingSlip.pdf"
 
-        with cols[4]:
-            try:
-                pdf_bytes = fetch_packing_slip(order["raw_id"])
-                st.download_button(
-                    label     = "⬇️ PDF",
-                    data      = pdf_bytes,
-                    file_name = filename,
-                    mime      = "application/pdf",
-                    key       = f"pdf_{order['raw_id']}",
-                )
-            except Exception:
-                st.write("Unavailable")
+        with cols[5]:
+            if order["source"] == "WSP":
+                # Download from Google Drive if file ID exists
+                if order.get("drive_file_id"):
+                    try:
+                        pdf_bytes = download_pdf_from_drive(order["drive_file_id"])
+                        st.download_button(
+                            label     = "⬇️ PDF",
+                            data      = pdf_bytes,
+                            file_name = filename,
+                            mime      = "application/pdf",
+                            key       = f"pdf_{order['raw_id']}",
+                        )
+                    except Exception:
+                        st.write("Unavailable")
+                else:
+                    st.write("No PDF")
+            else:
+                # Fetch from Faire API
+                try:
+                    pdf_bytes = fetch_packing_slip(order["raw_id"])
+                    st.download_button(
+                        label     = "⬇️ PDF",
+                        data      = pdf_bytes,
+                        file_name = filename,
+                        mime      = "application/pdf",
+                        key       = f"pdf_{order['raw_id']}",
+                    )
+                except Exception:
+                    st.write("Unavailable")
 
 
 # ─────────────────────────────────────────────
@@ -344,10 +435,8 @@ elif page == "📊 Inventory":
         if not rows or len(rows) < 2:
             st.info("No inventory data found.")
         else:
-            headers   = rows[0]
             data_rows = rows[1:]
-
-            inv_data = []
+            inv_data  = []
             for row in data_rows:
                 if len(row) < 2 or not row[1]:
                     continue
@@ -381,7 +470,7 @@ elif page == "🛒 WSP Orders":
     st.header("🛒 WholesalePet.com Orders")
     st.caption("Admin only. Enter new WSP orders below.")
 
-    # View existing WSP orders in spreadsheet layout
+    # View existing WSP orders
     try:
         ws         = get_sheet("WSP Orders")
         data       = ws.get_all_values()
@@ -396,16 +485,17 @@ elif page == "🛒 WSP Orders":
                 orders_dict[order_num] = {
                     "Order Date": row[0] if len(row) > 0 else "",
                     "Customer":   row[2] if len(row) > 2 else "",
+                    "PDF":        "✅" if (len(row) > 3 and row[3]) else "—",
                 }
                 for i, sku in enumerate(ALL_SKUS):
-                    col_idx = i + 3
+                    col_idx = i + 4  # offset by 4 (date, order#, customer, drive_file_id)
                     val = row[col_idx] if col_idx < len(row) else ""
                     orders_dict[order_num][sku] = val
 
             order_nums = list(orders_dict.keys())
             table_rows = []
 
-            for meta in ["Order Date", "Customer"]:
+            for meta in ["Order Date", "Customer", "PDF"]:
                 row_data = {"SKU": meta}
                 for o in order_nums:
                     row_data[o] = orders_dict[o].get(meta, "")
@@ -420,7 +510,8 @@ elif page == "🛒 WSP Orders":
                 table_rows.append(row_data)
 
             df = pd.DataFrame(table_rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, use_container_width=True, hide_index=True,
+                         height=(len(table_rows) + 1) * 35 + 3)
         else:
             st.info("No WSP orders entered yet.")
 
@@ -439,8 +530,9 @@ elif page == "🛒 WSP Orders":
         with col3:
             customer = st.text_input("Customer", value="")
 
-        st.markdown("**Enter quantities for each SKU (leave at 0 if not ordered):**")
+        uploaded_pdf = st.file_uploader("Upload Packing Slip PDF (optional)", type=["pdf"])
 
+        st.markdown("**Enter quantities for each SKU (leave at 0 if not ordered):**")
         quantities = {}
         for sku in ALL_SKUS:
             quantities[sku] = st.number_input(sku, min_value=0, value=0, step=1, key=f"wsp_{sku}")
@@ -452,12 +544,21 @@ elif page == "🛒 WSP Orders":
                 st.error("Please enter an Order #.")
             else:
                 try:
+                    # Upload PDF to Google Drive if provided
+                    drive_file_id = ""
+                    if uploaded_pdf and DRIVE_FOLDER_ID:
+                        customer_safe = customer.replace("/", "-").replace("\\", "-")
+                        pdf_filename  = f"{order_num}_{customer_safe}_PackingSlip.pdf"
+                        drive_file_id = upload_pdf_to_drive(uploaded_pdf.read(), pdf_filename)
+
+                    # Save order to Google Sheets
+                    # Row format: Date, Order#, Customer, DriveFileID, SKU quantities...
                     ws  = get_sheet("WSP Orders")
-                    row = [str(order_date), order_num, customer] + [
+                    row = [str(order_date), order_num, customer, drive_file_id] + [
                         quantities[sku] if quantities[sku] > 0 else "" for sku in ALL_SKUS
                     ]
                     ws.append_row(row)
-                    st.success(f"✅ Order {order_num} saved successfully!")
+                    st.success(f"✅ Order {order_num} saved!" + (" PDF uploaded." if drive_file_id else ""))
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save order: {e}")
