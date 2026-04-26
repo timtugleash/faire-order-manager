@@ -576,6 +576,101 @@ def build_excel(orders: list) -> bytes:
 
 
 # ─────────────────────────────────────────────
+# SKU WEIGHTS
+# ─────────────────────────────────────────────
+
+SKU_WEIGHTS = {
+    "T008-SBLK":   0.629,
+    "T008-MBLK":   0.761,
+    "T008-LBLK":   1.146,
+    "T008-SG":     0.629,
+    "T008-MG":     0.761,
+    "T008-LG":     1.146,
+    "T008-SC":     0.629,
+    "T008-MC":     0.761,
+    "T008-LC":     1.146,
+    "GRAB-H-SWT":  0.664,
+    "GRAB-H-MWT":  0.788,
+    "GRAB-H-LWT":  0.833,
+    "GRAB-H-XLWT": 0.924,
+    "GRAB-H-SBLK": 0.664,
+    "GRAB-H-MBLK": 0.788,
+    "GRAB-H-LBLK": 0.833,
+    "GRAB-H-XLBLK":0.924,
+    "GRAB-H-SG":   0.664,
+    "GRAB-H-MG":   0.788,
+    "GRAB-H-LG":   0.833,
+    "GRAB-H-XLG":  0.924,
+    "GRAB-C-MWT":  0.270,
+    "GRAB-C-LWT":  0.358,
+    "GRAB-C-XLWT": 0.470,
+    "GRAB-C-MBLK": 0.270,
+    "GRAB-C-LBLK": 0.358,
+    "GRAB-C-XLBLK":0.470,
+    "ROPE-OVL-BLK":0.585,
+    "ROPE-OVL-BLU":0.585,
+    "ROPE-OVL-GRN":0.585,
+    "TUG-WM-MNY":  0.0,   # update when weight is provided
+    "TUG-FL-02":   0.0,   # update when weight is provided
+}
+
+
+# ─────────────────────────────────────────────
+# SHIPPING INFO FUNCTIONS
+# ─────────────────────────────────────────────
+
+def save_carton(order_num: str, carton_num: int, length: float, width: float, height: float, sku_qtys: dict):
+    """Save a carton's info to the Shipping Info sheet. One row per SKU."""
+    ws  = get_sheet("Shipping Info")
+    # Check if header exists
+    existing = ws.get_all_values()
+    if not existing or existing[0] != ["Order #", "Carton #", "Length", "Width", "Height", "SKU", "Qty", "Weight (lbs)"]:
+        ws.insert_row(["Order #", "Carton #", "Length", "Width", "Height", "SKU", "Qty", "Weight (lbs)"], 1)
+
+    for sku, qty in sku_qtys.items():
+        if qty > 0:
+            weight = round(SKU_WEIGHTS.get(sku, 0) * qty, 3)
+            ws.append_row([order_num, carton_num, length, width, height, sku, qty, weight])
+
+
+def delete_carton(order_num: str, carton_num: int):
+    """Delete all rows for a specific carton."""
+    ws   = get_sheet("Shipping Info")
+    rows = ws.get_all_values()
+    # Collect row indices to delete in reverse
+    to_delete = [
+        i + 1 for i, row in enumerate(rows)
+        if len(row) >= 2 and row[0] == order_num and str(row[1]) == str(carton_num)
+    ]
+    for row_idx in reversed(to_delete):
+        ws.delete_rows(row_idx)
+
+
+def get_shipping_info(order_num: str) -> dict:
+    """Get all cartons for an order. Returns {carton_num: {dims, skus}}."""
+    try:
+        ws   = get_sheet("Shipping Info")
+        rows = ws.get_all_values()
+        cartons = {}
+        for row in rows[1:]:
+            if len(row) < 7 or row[0] != order_num:
+                continue
+            c_num = int(row[1])
+            if c_num not in cartons:
+                cartons[c_num] = {
+                    "length": row[2], "width": row[3], "height": row[4],
+                    "skus": {}
+                }
+            try:
+                cartons[c_num]["skus"][row[5]] = int(row[6])
+            except ValueError:
+                pass
+        return cartons
+    except Exception:
+        return {}
+
+
+# ─────────────────────────────────────────────
 # HEADER + NAVIGATION
 # ─────────────────────────────────────────────
 col_title, col_logout = st.columns([6, 1])
@@ -588,7 +683,7 @@ with col_logout:
         st.session_state.clear()
         st.rerun()
 
-pages = ["📋 Orders", "📊 Inventory"]
+pages = ["📋 Orders", "📊 Inventory", "📦 Shipping Info"]
 if role == "admin":
     pages.append("🛒 WSP Orders")
 
@@ -992,3 +1087,145 @@ elif page == "🛒 WSP Orders":
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save order: {e}")
+
+
+# ─────────────────────────────────────────────
+# PAGE: SHIPPING INFO
+# ─────────────────────────────────────────────
+elif page == "📦 Shipping Info":
+    st.header("📦 Shipping Info")
+    st.caption("Enter carton dimensions and SKU quantities for each order.")
+
+    # Get all current orders
+    faire_orders  = st.session_state.get("faire_orders", [])
+    wsp_orders    = get_wsp_orders()
+    all_orders    = faire_orders + wsp_orders
+
+    if not all_orders:
+        st.info("No orders found. Go to the Orders page and click '🔄 Refresh from Faire' first.")
+        st.stop()
+
+    # Order selector
+    order_options = {
+        f"{o['order_number']} — {o['customer']}": o for o in all_orders
+    }
+    selected_label = st.selectbox("Select Order", options=list(order_options.keys()))
+    selected_order = order_options[selected_label]
+    order_num      = selected_order["order_number"]
+
+    # Build ordered SKU list for this order
+    ordered_skus = {item["sku"]: item["quantity"] for item in selected_order["items"]}
+
+    st.divider()
+
+    # Load existing cartons for this order
+    existing_cartons = get_shipping_info(order_num)
+    assigned_qtys    = {sku: 0 for sku in ordered_skus}
+    for c in existing_cartons.values():
+        for sku, qty in c["skus"].items():
+            if sku in assigned_qtys:
+                assigned_qtys[sku] += qty
+
+    # Show remaining quantities
+    st.subheader(f"📋 {order_num} — SKU Summary")
+    summary_data = []
+    all_assigned = True
+    for sku, total_qty in ordered_skus.items():
+        assigned  = assigned_qtys.get(sku, 0)
+        remaining = total_qty - assigned
+        if remaining != 0:
+            all_assigned = False
+        summary_data.append({
+            "SKU":       sku,
+            "Ordered":   total_qty,
+            "Assigned":  assigned,
+            "Remaining": remaining,
+        })
+
+    import pandas as pd
+    summary_df = pd.DataFrame(summary_data)
+    st.dataframe(summary_df, use_container_width=True, hide_index=True,
+                 height=(len(summary_data) + 1) * 35 + 3)
+
+    if all_assigned:
+        st.success("✅ All SKUs have been assigned to cartons!")
+    else:
+        remaining_count = sum(1 for r in summary_data if r["Remaining"] != 0)
+        st.warning(f"⚠️ {remaining_count} SKU(s) still have unassigned quantities.")
+
+    st.divider()
+
+    # Show existing cartons
+    if existing_cartons:
+        st.subheader("🗃️ Existing Cartons")
+        for c_num in sorted(existing_cartons.keys()):
+            c = existing_cartons[c_num]
+            total_weight = sum(
+                SKU_WEIGHTS.get(sku, 0) * qty
+                for sku, qty in c["skus"].items()
+            )
+            with st.expander(
+                f"Carton {c_num} — {c['length']}\" × {c['width']}\" × {c['height']}\"  |  "
+                f"Weight: {round(total_weight, 2)} lbs",
+                expanded=False
+            ):
+                for sku, qty in c["skus"].items():
+                    w = round(SKU_WEIGHTS.get(sku, 0) * qty, 3)
+                    st.write(f"**{sku}**: {qty} units ({w} lbs)")
+
+                if st.button(f"🗑️ Delete Carton {c_num}", key=f"del_carton_{c_num}"):
+                    delete_carton(order_num, c_num)
+                    st.success(f"Carton {c_num} deleted.")
+                    st.rerun()
+
+    st.divider()
+
+    # Add new carton
+    next_carton_num = max(existing_cartons.keys(), default=0) + 1
+    st.subheader(f"➕ Add Carton {next_carton_num}")
+
+    with st.form(f"carton_form_{order_num}_{next_carton_num}"):
+        st.markdown("**Dimensions (inches):**")
+        dim_col1, dim_col2, dim_col3 = st.columns(3)
+        with dim_col1:
+            length = st.number_input('Length "', min_value=0.0, step=0.1)
+        with dim_col2:
+            width  = st.number_input('Width "',  min_value=0.0, step=0.1)
+        with dim_col3:
+            height = st.number_input('Height "', min_value=0.0, step=0.1)
+
+        st.markdown("**SKU Quantities for this carton:**")
+        st.caption("Only SKUs included in this order are shown.")
+
+        sku_qtys = {}
+        for sku, total_qty in ordered_skus.items():
+            remaining = total_qty - assigned_qtys.get(sku, 0)
+            label     = f"{sku}  (remaining: {remaining})"
+            sku_qtys[sku] = st.number_input(
+                label,
+                min_value = 0,
+                max_value = int(total_qty),
+                value     = 0,
+                step      = 1,
+                key       = f"carton_{sku}",
+            )
+
+        # Live weight preview
+        preview_weight = sum(
+            SKU_WEIGHTS.get(sku, 0) * qty for sku, qty in sku_qtys.items()
+        )
+        st.info(f"📦 Estimated carton weight: **{round(preview_weight, 2)} lbs**")
+
+        submitted = st.form_submit_button("💾 Save Carton")
+        if submitted:
+            if length == 0 or width == 0 or height == 0:
+                st.error("Please enter all dimensions.")
+            elif sum(sku_qtys.values()) == 0:
+                st.error("Please assign at least one SKU to this carton.")
+            else:
+                try:
+                    save_carton(order_num, next_carton_num, length, width, height, sku_qtys)
+                    st.success(f"✅ Carton {next_carton_num} saved! Weight: {round(preview_weight, 2)} lbs")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save carton: {e}")
