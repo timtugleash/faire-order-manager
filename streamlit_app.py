@@ -579,40 +579,26 @@ def build_excel(orders: list) -> bytes:
 # SKU WEIGHTS
 # ─────────────────────────────────────────────
 
-SKU_WEIGHTS = {
-    "T008-SBLK":   0.629,
-    "T008-MBLK":   0.761,
-    "T008-LBLK":   1.146,
-    "T008-SG":     0.629,
-    "T008-MG":     0.761,
-    "T008-LG":     1.146,
-    "T008-SC":     0.629,
-    "T008-MC":     0.761,
-    "T008-LC":     1.146,
-    "GRAB-H-SWT":  0.664,
-    "GRAB-H-MWT":  0.788,
-    "GRAB-H-LWT":  0.833,
-    "GRAB-H-XLWT": 0.924,
-    "GRAB-H-SBLK": 0.664,
-    "GRAB-H-MBLK": 0.788,
-    "GRAB-H-LBLK": 0.833,
-    "GRAB-H-XLBLK":0.924,
-    "GRAB-H-SG":   0.664,
-    "GRAB-H-MG":   0.788,
-    "GRAB-H-LG":   0.833,
-    "GRAB-H-XLG":  0.924,
-    "GRAB-C-MWT":  0.270,
-    "GRAB-C-LWT":  0.358,
-    "GRAB-C-XLWT": 0.470,
-    "GRAB-C-MBLK": 0.270,
-    "GRAB-C-LBLK": 0.358,
-    "GRAB-C-XLBLK":0.470,
-    "ROPE-OVL-BLK":0.585,
-    "ROPE-OVL-BLU":0.585,
-    "ROPE-OVL-GRN":0.585,
-    "TUG-WM-MNY":  0.0,   # update when weight is provided
-    "TUG-FL-02":   0.0,   # update when weight is provided
-}
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sku_weights() -> dict:
+    """Load SKU weights from the SKU Weights tab in Google Sheets."""
+    try:
+        ws   = get_sheet("SKU Weights")
+        rows = ws.get_all_values()
+        weights = {}
+        for row in rows[1:]:  # skip header
+            if len(row) >= 2 and row[0] and row[1]:
+                try:
+                    weights[row[0].strip()] = float(row[1])
+                except ValueError:
+                    pass
+        return weights
+    except Exception as e:
+        st.warning(f"Could not load SKU weights: {e}")
+        return {}
+
+def get_sku_weight(sku: str) -> float:
+    return load_sku_weights().get(sku, 0.0)
 
 
 # ─────────────────────────────────────────────
@@ -629,7 +615,7 @@ def save_carton(order_num: str, carton_num: int, length: float, width: float, he
 
     for sku, qty in sku_qtys.items():
         if qty > 0:
-            weight = round(SKU_WEIGHTS.get(sku, 0) * qty, 3)
+            weight = round(get_sku_weight(sku) * qty, 3)
             ws.append_row([order_num, carton_num, length, width, height, sku, qty, weight])
 
 
@@ -1161,7 +1147,7 @@ elif page == "📦 Shipping Info":
         for c_num in sorted(existing_cartons.keys()):
             c = existing_cartons[c_num]
             total_weight = sum(
-                SKU_WEIGHTS.get(sku, 0) * qty
+                get_sku_weight(sku) * qty
                 for sku, qty in c["skus"].items()
             )
             with st.expander(
@@ -1170,7 +1156,7 @@ elif page == "📦 Shipping Info":
                 expanded=False
             ):
                 for sku, qty in c["skus"].items():
-                    w = round(SKU_WEIGHTS.get(sku, 0) * qty, 3)
+                    w = round(get_sku_weight(sku) * qty, 3)
                     st.write(f"**{sku}**: {qty} units ({w} lbs)")
 
                 if st.button(f"🗑️ Delete Carton {c_num}", key=f"del_carton_{c_num}"):
@@ -1224,7 +1210,7 @@ elif page == "📦 Shipping Info":
 
         # Live weight preview
         preview_weight = sum(
-            SKU_WEIGHTS.get(sku, 0) * qty for sku, qty in sku_qtys.items()
+            get_sku_weight(sku) * qty for sku, qty in sku_qtys.items()
         )
         st.info(f"📦 Estimated carton weight: **{round(preview_weight, 2)} lbs**")
 
