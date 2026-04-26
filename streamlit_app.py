@@ -1180,6 +1180,10 @@ elif page == "📦 Shipping Info":
 
     st.divider()
 
+    # Only show Add Carton form if there are still unassigned SKUs
+    if all_assigned:
+        st.stop()
+
     # Add new carton
     next_carton_num = max(existing_cartons.keys(), default=0) + 1
     st.subheader(f"➕ Add Carton {next_carton_num}")
