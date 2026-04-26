@@ -1195,20 +1195,28 @@ elif page == "📦 Shipping Info":
             height = st.number_input('Height "', min_value=0.0, step=0.1)
 
         st.markdown("**SKU Quantities for this carton:**")
-        st.caption("Only SKUs included in this order are shown.")
+        st.caption("Only SKUs with remaining quantities are shown.")
 
         sku_qtys = {}
-        for sku, total_qty in ordered_skus.items():
-            remaining = total_qty - assigned_qtys.get(sku, 0)
-            label     = f"{sku}  (remaining: {remaining})"
-            sku_qtys[sku] = st.number_input(
-                label,
-                min_value = 0,
-                max_value = int(total_qty),
-                value     = 0,
-                step      = 1,
-                key       = f"carton_{sku}",
-            )
+        available_skus = {
+            sku: qty for sku, qty in ordered_skus.items()
+            if (qty - assigned_qtys.get(sku, 0)) > 0
+        }
+
+        if not available_skus:
+            st.success("All SKUs are fully assigned!")
+        else:
+            for sku, total_qty in available_skus.items():
+                remaining = total_qty - assigned_qtys.get(sku, 0)
+                label     = f"{sku}  (remaining: {remaining})"
+                sku_qtys[sku] = st.number_input(
+                    label,
+                    min_value = 0,
+                    max_value = int(remaining),
+                    value     = 0,
+                    step      = 1,
+                    key       = f"carton_{next_carton_num}_{sku}",
+                )
 
         # Live weight preview
         preview_weight = sum(
