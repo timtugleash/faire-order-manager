@@ -657,6 +657,25 @@ def get_shipping_info(order_num: str) -> dict:
 
 
 # ─────────────────────────────────────────────
+# INVENTORY PUSH TO FAIRE
+# ─────────────────────────────────────────────
+
+def push_inventory_to_faire(inventories: list) -> dict:
+    """Push inventory updates to Faire API.
+    inventories: list of {"sku": str, "on_hand_quantity": int}
+    """
+    url     = "https://www.faire.com/external-api/v2/product-inventory/by-skus"
+    headers = {
+        "X-FAIRE-ACCESS-TOKEN": FAIRE_API_KEY,
+        "Content-Type": "application/json",
+    }
+    payload  = {"inventories": inventories}
+    response = requests.patch(url, headers=headers, json=payload)
+    response.raise_for_status()
+    return response.json()
+
+
+# ─────────────────────────────────────────────
 # HEADER + NAVIGATION
 # ─────────────────────────────────────────────
 col_title, col_logout = st.columns([6, 1])
@@ -730,14 +749,13 @@ if page == "📋 Orders":
     wsp_count   = len(wsp_orders)
     st.success(f"**{len(all_orders)} order(s)** — {faire_count} from Faire, {wsp_count} from WholesalePet.com")
 
-    if role == "admin":
-        excel_bytes = build_excel(all_orders)
-        st.download_button(
-            label     = "⬇️ Download Excel (New Orders)",
-            data      = excel_bytes,
-            file_name = "new_orders.xlsx",
-            mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+    excel_bytes = build_excel(all_orders)
+    st.download_button(
+        label     = "⬇️ Download Excel (New Orders)",
+        data      = excel_bytes,
+        file_name = "new_orders.xlsx",
+        mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
     # Finalize Orders — double confirmation
     if role == "admin":
@@ -915,6 +933,37 @@ elif page == "📊 Inventory":
                     )
                 except Exception as e:
                     st.error(f"Could not prepare Inventory Received download: {e}")
+
+                st.divider()
+                st.subheader("🔄 Push Inventory to Faire")
+                st.caption("⚠️ TEST MODE: Pushes only T008-WM-MNY with quantity 99 to verify API connection.")
+
+                if "push_inv_confirm" not in st.session_state:
+                    st.session_state["push_inv_confirm"] = False
+
+                if not st.session_state["push_inv_confirm"]:
+                    if st.button("🔄 Push Inventory to Faire", type="primary"):
+                        st.session_state["push_inv_confirm"] = True
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Are you sure? This will update inventory levels in Faire. This cannot be undone.")
+                    push_col1, push_col2 = st.columns([1, 1])
+                    with push_col1:
+                        if st.button("✅ Yes, Push Inventory", type="primary"):
+                            with st.spinner("Pushing inventory to Faire..."):
+                                try:
+                                    test_payload = [{"sku": "TUG-WM-MNY", "on_hand_quantity": 99}]
+                                    result = push_inventory_to_faire(test_payload)
+                                    st.session_state["push_inv_confirm"] = False
+                                    st.success("✅ Test successful! TUG-WM-MNY set to 99 in Faire. Check your Faire account to verify.")
+                                    st.json(result)
+                                except Exception as e:
+                                    st.error(f"Failed to push inventory: {e}")
+                                    st.session_state["push_inv_confirm"] = False
+                    with push_col2:
+                        if st.button("❌ Cancel", key="cancel_push"):
+                            st.session_state["push_inv_confirm"] = False
+                            st.rerun()
 
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
@@ -1227,3 +1276,9 @@ elif page == "📦 Shipping Info":
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save carton: {e}")
+
+
+# ─────────────────────────────────────────────
+# INVENTORY PUSH TEST (Admin only)
+# Added at bottom of Inventory page via session flag
+# ─────────────────────────────────────────────
