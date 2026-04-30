@@ -519,6 +519,42 @@ def sheet_to_excel(tab_name: str) -> bytes:
 # ─────────────────────────────────────────────
 # EXCEL BUILDER
 # ─────────────────────────────────────────────
+STORAGE_BOXES = {
+    "T008-SBLK":    "RDL1",
+    "T008-MBLK":    "RDL2",
+    "T008-LBLK":    "RDL3",
+    "T008-SG":      "RDL4",
+    "T008-MG":      "RDL5",
+    "T008-LG":      "RDL6",
+    "T008-SC":      "RDL7",
+    "T008-MC":      "RDL8",
+    "T008-LC":      "RDL9",
+    "GRAB-H-SWT":   "GH1",
+    "GRAB-H-MWT":   "GH2",
+    "GRAB-H-LWT":   "GH3",
+    "GRAB-H-XLWT":  "GH4",
+    "GRAB-H-SBLK":  "GH5",
+    "GRAB-H-MBLK":  "GH6",
+    "GRAB-H-LBLK":  "GH7",
+    "GRAB-H-XLBLK": "GH8",
+    "GRAB-H-SG":    "GH9",
+    "GRAB-H-MG":    "GH10",
+    "GRAB-H-LG":    "GH11",
+    "GRAB-H-XLG":   "GH12",
+    "GRAB-C-MWT":   "GC1",
+    "GRAB-C-LWT":   "GC2",
+    "GRAB-C-XLWT":  "GC3",
+    "GRAB-C-MBLK":  "GC4",
+    "GRAB-C-LBLK":  "GC5",
+    "GRAB-C-XLBLK": "GC6",
+    "ROPE-OVL-BLK": "RL1",
+    "ROPE-OVL-BLU": "RL2",
+    "ROPE-OVL-GRN": "RL3",
+    "TUG-WM-MNY":   "",
+    "TUG-FL-02":    "",
+}
+
+
 def build_excel(orders: list) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -531,19 +567,33 @@ def build_excel(orders: list) -> bytes:
 
     ROW_DATE, ROW_ORDER, ROW_CUSTOMER, ROW_BLANK, ROW_SKU_START = 1, 2, 3, 4, 5
 
-    for row, label in [(ROW_DATE, "Order Date"), (ROW_ORDER, "Order #"), (ROW_CUSTOMER, "Customer")]:
+    # Column A — "SKU" header + SKU labels
+    for row, label in [(ROW_DATE, ""), (ROW_ORDER, ""), (ROW_CUSTOMER, ""), (ROW_BLANK, "SKU")]:
         cell = ws.cell(row=row, column=1, value=label)
-        cell.font      = Font(bold=True, name="Arial", size=10)
-        cell.fill      = PatternFill("solid", start_color="D9E1F2")
-        cell.alignment = Alignment(horizontal="left", vertical="center")
+        if label == "SKU":
+            cell.font      = Font(bold=True, name="Arial", size=10)
+            cell.fill      = PatternFill("solid", start_color="D9E1F2")
+            cell.alignment = Alignment(horizontal="left", vertical="center")
 
     for i, sku in enumerate(ALL_SKUS):
         cell = ws.cell(row=ROW_SKU_START + i, column=1, value=sku)
         cell.font      = Font(name="Arial", size=10)
         cell.alignment = Alignment(horizontal="left", vertical="center")
 
+    # Column B — "Storage Box" header + storage box values
+    storage_header = ws.cell(row=ROW_BLANK, column=2, value="Storage Box")
+    storage_header.font      = Font(bold=True, name="Arial", size=10)
+    storage_header.fill      = PatternFill("solid", start_color="D9E1F2")
+    storage_header.alignment = Alignment(horizontal="left", vertical="center")
+
+    for i, sku in enumerate(ALL_SKUS):
+        cell = ws.cell(row=ROW_SKU_START + i, column=2, value=STORAGE_BOXES.get(sku, ""))
+        cell.font      = Font(name="Arial", size=10)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Columns C onwards — one order per column
     for col_offset, order in enumerate(orders):
-        col = col_offset + 2
+        col = col_offset + 3  # start at column C
 
         date_cell = ws.cell(row=ROW_DATE, column=col, value=order["created_at"])
         date_cell.font      = Font(name="Arial", size=10)
@@ -565,9 +615,10 @@ def build_excel(orders: list) -> bytes:
             cell.font      = Font(name="Arial", size=10)
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 14
     for col_offset in range(len(orders)):
-        ws.column_dimensions[get_column_letter(col_offset + 2)].width = 22
+        ws.column_dimensions[get_column_letter(col_offset + 3)].width = 22
 
     buf = io.BytesIO()
     wb.save(buf)
