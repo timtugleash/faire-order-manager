@@ -804,7 +804,7 @@ if page == "📋 Orders":
     st.download_button(
         label     = "⬇️ Download Excel (New Orders)",
         data      = excel_bytes,
-        file_name = "new_orders.xlsx",
+        file_name = f"new_orders_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
         mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
