@@ -845,56 +845,42 @@ if page == "📋 Orders":
 
     st.divider()
 
-    cols = st.columns([2, 3, 2, 2, 1, 2])
-    cols[0].markdown("**Order #**")
-    cols[1].markdown("**Customer**")
-    cols[2].markdown("**Date**")
-    cols[3].markdown("**Status**")
-    cols[4].markdown("**Source**")
-    cols[5].markdown("**Packing Slip**")
-    st.divider()
-
     for order in all_orders:
-        cols = st.columns([2, 3, 2, 2, 1, 2])
-        cols[0].write(order["order_number"])
-        cols[1].write(order["customer"] or "—")
-        cols[2].write(order["created_at"])
-        cols[3].write(order["state"])
-        cols[4].write("🛒 WSP" if order["source"] == "WSP" else "🏪 Faire")
-
         customer_safe = (order["customer"] or "Unknown").replace("/", "-").replace("\\", "-")
         filename      = f"{order['order_number']}_{customer_safe}_PackingSlip.pdf"
+        source_label  = "🛒 WSP" if order["source"] == "WSP" else "🏪 Faire"
 
-        with cols[5]:
+        with st.container(border=True):
+            st.markdown(f"**{order['order_number']}** — {order['customer'] or '—'}")
+            st.caption(f"{order['created_at']}  |  {order['state']}  |  {source_label}")
+
             if order["source"] == "WSP":
-                # Download PDF from Google Sheets storage if available
                 if order.get("drive_file_id"):
                     try:
                         pdf_bytes = retrieve_pdf_from_sheet(order["drive_file_id"])
                         st.download_button(
-                            label     = "⬇️ PDF",
+                            label     = "⬇️ Packing Slip PDF",
                             data      = pdf_bytes,
                             file_name = filename,
                             mime      = "application/pdf",
                             key       = f"pdf_{order['raw_id']}",
                         )
                     except Exception:
-                        st.write("Unavailable")
+                        st.caption("PDF unavailable")
                 else:
-                    st.write("No PDF")
+                    st.caption("No PDF uploaded")
             else:
-                # Fetch from Faire API
                 try:
                     pdf_bytes = fetch_packing_slip(order["raw_id"])
                     st.download_button(
-                        label     = "⬇️ PDF",
+                        label     = "⬇️ Packing Slip PDF",
                         data      = pdf_bytes,
                         file_name = filename,
                         mime      = "application/pdf",
                         key       = f"pdf_{order['raw_id']}",
                     )
                 except Exception:
-                    st.write("Unavailable")
+                    st.caption("PDF unavailable")
 
 
 # ─────────────────────────────────────────────
